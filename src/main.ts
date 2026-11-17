@@ -97,8 +97,6 @@ class Game {
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
   private readonly cameraTarget = new Vector3();
   private readonly cameraForward = new Vector3();
-  private readonly cameraRight = new Vector3();
-  private readonly cameraUp = new Vector3();
   private readonly pendingBlasts: PendingBlast[] = [];
   private readonly smokeAccumulator = [0, 0, 0, 0];
   private readonly previousWheel = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -164,7 +162,7 @@ class Game {
     flat.backFaceCulling = false;
 
     this.world = new World(this.scene, flat, shadows);
-    this.smoke = new SmokeSystem(this.scene, PALETTE.haze, FOG_START, FOG_END);
+    this.smoke = new SmokeSystem(this.scene, this.camera, PALETTE.haze, FOG_START, FOG_END);
     this.enemies = new EnemySystem(this.scene, flat, shadows);
     this.gun = new GunSystem(this.scene);
     this.pickups = new PickupSystem(this.scene, flat);
@@ -203,8 +201,6 @@ class Game {
       fanPower: 0,
       fanRange: 0,
       cameraForward: this.cameraForward,
-      cameraRight: this.cameraRight,
-      cameraUp: this.cameraUp,
       cameraPosition: this.camera.position,
       sunDirection: SUN_DIRECTION,
     };
@@ -614,9 +610,6 @@ class Game {
     env.fanPower = this.stats.fanPower;
     env.fanRange = this.stats.fanRange;
     this.cameraForward.copyFrom(CAMERA_OFFSET).scaleInPlace(-1);
-    Vector3.CrossToRef(Vector3.UpReadOnly, this.cameraForward, this.cameraRight);
-    this.cameraRight.normalize();
-    Vector3.CrossToRef(this.cameraForward, this.cameraRight, this.cameraUp);
     this.smoke.update(dt, env);
   }
 

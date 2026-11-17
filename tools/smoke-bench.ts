@@ -1,11 +1,13 @@
-import { Color3, NullEngine, Scene, Vector3 } from "@babylonjs/core";
+import { Color3, FreeCamera, InternalTexture, InternalTextureSource, NullEngine, Scene, Vector3 } from "@babylonjs/core";
 import { PUFF, type SmokeEnvironment, SmokeSystem } from "../src/smoke";
 
 const engine = new NullEngine();
+engine.createRawTexture3D = () => new InternalTexture(engine, InternalTextureSource.Raw3D);
+engine.updateRawTexture3D = () => undefined;
 const scene = new Scene(engine);
-const smoke = new SmokeSystem(scene, new Color3(0.8, 0.7, 0.6), 60, 160);
+const camera = new FreeCamera("camera", new Vector3(0, 56, -42), scene);
+const smoke = new SmokeSystem(scene, camera, new Color3(0.8, 0.7, 0.6), 60, 160);
 const forward = new Vector3(0, -0.8, 0.6).normalize();
-const right = Vector3.Cross(Vector3.UpReadOnly, forward).normalize();
 const env: SmokeEnvironment = {
   time: 0,
   carX: 0,
@@ -17,14 +19,12 @@ const env: SmokeEnvironment = {
   fanPower: 0,
   fanRange: 0,
   cameraForward: forward,
-  cameraRight: right,
-  cameraUp: Vector3.Cross(forward, right),
-  cameraPosition: new Vector3(0, 40, -30),
+  cameraPosition: camera.position,
   sunDirection: new Vector3(-0.4, -0.8, 0.3).normalize(),
 };
 
 const dt = 1 / 60;
-const puffsPerFrame = 18;
+const puffsPerFrame = Number(process.argv[2] ?? 18);
 const warmupFrames = 600;
 const measuredFrames = 1800;
 let heading = 0;
@@ -42,6 +42,7 @@ for (let frame = 0; frame < warmupFrames + measuredFrames; frame++) {
   env.carVz = Math.cos(heading - 0.6) * speed;
   env.carX += env.carVx * dt;
   env.carZ += env.carVz * dt;
+  camera.position.set(env.carX, 56, env.carZ - 42);
   for (let i = 0; i < puffsPerFrame; i++) {
     smoke.emit(
       PUFF.white,
