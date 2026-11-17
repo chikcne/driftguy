@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "sim": "tsx tools/drive-sim.ts",
+    "plant-sim": "tsx tools/plant-sim.ts",
     "smoke-bench": "tsx tools/smoke-bench.ts"
   },
   "dependencies": {

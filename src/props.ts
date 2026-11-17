@@ -1,5 +1,6 @@
 import { Mesh, Scene } from "@babylonjs/core";
 import { ModelKit } from "./kit";
+import type { LoosePoint, LooseSpec } from "./loose";
 import { PALETTE as P } from "./palette";
 
 export interface LocalCollider {
@@ -16,6 +17,7 @@ export interface PropDef {
   minScale: number;
   maxScale: number;
   sink: number;
+  loose?: LooseSpec;
 }
 
 export type PropName =
@@ -39,6 +41,16 @@ const HALF_PI = Math.PI / 2;
 
 function solid(r: number): LocalCollider[] {
   return [{ x: 0, z: 0, r }];
+}
+
+function stalk(mass: number, height: number, radius: number, limbs: LoosePoint[] = []): LooseSpec {
+  const points: LoosePoint[] = [];
+  for (let i = 0; i < 4; i++) points.push([0, radius + ((height - radius * 2) * i) / 3, 0, radius]);
+  return { mass, radius, centre: height * 0.45, points: [...points, ...limbs] };
+}
+
+function tuft(mass: number, height: number, radius: number): LooseSpec {
+  return { mass, radius, centre: height, points: [[0, height, 0, radius]] };
 }
 
 export function buildProps(scene: Scene): Record<PropName, PropDef> {
@@ -170,7 +182,8 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     maxScale: number,
     castsShadow = true,
     sink = 0.1,
-  ): PropDef => ({ name: mesh.name, mesh, colliders, castsShadow, minScale, maxScale, sink });
+    loose?: LooseSpec,
+  ): PropDef => ({ name: mesh.name, mesh, colliders, castsShadow, minScale, maxScale, sink, loose });
 
   return {
     rockA: def(rockA, solid(0.95), 1.2, 3.6, true, 0.25),
@@ -190,12 +203,35 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
       1,
       1.3,
     ),
-    cactus: def(cactus, solid(0.45), 0.8, 1.5),
-    deadTree: def(deadTree, solid(0.4), 0.9, 1.6),
+    cactus: def(
+      cactus,
+      solid(0.45),
+      0.8,
+      1.5,
+      true,
+      0.1,
+      stalk(0.2, 3.2, 0.45, [
+        [0.95, 2.4, 0, 0.3],
+        [-0.75, 2.65, 0, 0.28],
+      ]),
+    ),
+    deadTree: def(
+      deadTree,
+      solid(0.4),
+      0.9,
+      1.6,
+      true,
+      0.1,
+      stalk(0.15, 3.4, 0.32, [
+        [1.15, 3.55, 0, 0.14],
+        [-1.1, 3.85, 0.3, 0.14],
+        [0, 4.2, -0.8, 0.14],
+      ]),
+    ),
     barrel: def(barrel, solid(0.45), 1, 1.1),
     ribs: def(ribs, [], 0.9, 1.6, true, 0.3),
     pylon: def(pylon, solid(0.35), 1, 1.2),
     pebble: def(pebble, [], 0.5, 1.6, false, 0),
-    shrub: def(shrub, [], 0.8, 1.8, false, 0),
+    shrub: def(shrub, [], 0.8, 1.8, false, 0, tuft(0.012, 0.32, 0.36)),
   };
 }

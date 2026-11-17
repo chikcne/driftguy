@@ -1,5 +1,6 @@
 import { Color3, Material, Mesh, Scene, ShadowGenerator, VertexData } from "@babylonjs/core";
 import { writeTransform } from "./kit";
+import { LooseSystem, type Mover, type Obstruction, type Shove } from "./loose";
 import { hash2, lerp, type Rng, saturate, seededRng, TAU } from "./math";
 import { PALETTE } from "./palette";
 import { buildProps, type PropDef, type PropName } from "./props";
@@ -17,12 +18,34 @@ export interface Contact {
   nz: number;
 }
 
+interface Rooted {
+  id: number;
+  name: PropName;
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  yaw: number;
+  scale: number;
+  scaleY: number;
+  solid: boolean;
+  alive: boolean;
+  list: number[];
+  offset: number;
+}
+
 interface Chunk {
   cx: number;
   cz: number;
   ground: Mesh;
   placements: Map<PropName, number[]>;
   colliders: Collider[];
+  rooted: Rooted[];
+}
+
+interface LooseBatch {
+  mesh: Mesh;
+  matrices: Float32Array;
 }
 
 const VIEW_RADIUS_CHUNKS = 2;
@@ -32,6 +55,8 @@ const KEY_OFFSET = 32768;
 const KEY_STRIDE = 65536;
 const OUTPOST_CHANCE = 0.16;
 const PLACEMENT_ATTEMPTS = 5;
+const ROOTED_ID_STRIDE = 256;
+const LOOSE_CAPACITY = 64;
 
 const SCATTER_TABLE: Array<[PropName, number]> = [
   ["rockA", 5],
@@ -74,6 +99,11 @@ export class World {
   private readonly props: Record<PropName, PropDef>;
   private readonly chunks = new Map<number, Chunk>();
   private readonly colliderGrid = new Map<number, Collider[]>();
+  private readonly rootedGrid = new Map<number, Rooted[]>();
+  private readonly uprooted = new Set<number>();
+  private readonly loose = new LooseSystem<PropName>();
+  private readonly looseBatches = new Map<PropName, LooseBatch>();
+  private readonly obstacles = (spot: { x: number; z: number }, radius: number, out: Obstruction): Obstruction => this.resolve(spot, radius, out);
   private centerX = Number.NaN;
   private centerZ = Number.NaN;
 
@@ -90,6 +120,56 @@ export class World {
       prop.mesh.setEnabled(false);
       if (prop.castsShadow) shadows.addShadowCaster(prop.mesh);
     }
+    for (const [name, prop] of Object.entries(this.props) as Array<[PropName, PropDef]>) {
+      if (!prop.loose) continue;
+      const mesh = prop.mesh.clone(`${name}Loose`);
+      mesh.makeGeometryUnique();
+      const matrices = new Float32Array(LOOSE_CAPACITY * 16);
+      mesh.material = material;
+      mesh.alwaysSelectAsActiveMesh = true;
+      mesh.receiveShadows = true;
+      mesh.thinInstanceSetBuffer("matrix", matrices, 16, false);
+      mesh.thinInstanceCount = 0;
+      mesh.setEnabled(false);
+      if (prop.castsShadow) shadows.addShadowCaster(mesh);
+      this.looseBatches.set(name, { mesh, matrices });
+    }
+  }
+
+  reset(): void {
+    this.loose.clear();
+    this.uprooted.clear();
+    for (const chunk of this.chunks.values()) chunk.ground.dispose();
+    this.chunks.clear();
+    this.centerX = Number.NaN;
+    this.centerZ = Number.NaN;
+    this.renderLoose();
+  }
+
+  step(dt: number, x: number, z: number): void {
+    this.loose.step(dt, x, z, this.obstacles);
+    this.renderLoose();
+  }
+
+  shove(mover: Mover, radius: number, mass: number, out: Shove): Shove {
+    const minX = Math.floor((mover.x - radius) / COLLIDER_CELL);
+    const maxX = Math.floor((mover.x + radius) / COLLIDER_CELL);
+    const minZ = Math.floor((mover.z - radius) / COLLIDER_CELL);
+    const maxZ = Math.floor((mover.z + radius) / COLLIDER_CELL);
+    for (let gz = minZ; gz <= maxZ; gz++) {
+      for (let gx = minX; gx <= maxX; gx++) {
+        const bucket = this.rootedGrid.get(cellKey(gx, gz));
+        if (!bucket) continue;
+        for (const plant of bucket) {
+          if (!plant.alive) continue;
+          const reach = radius + plant.r;
+          const dx = plant.x - mover.x;
+          const dz = plant.z - mover.z;
+          if (dx * dx + dz * dz < reach * reach) this.uproot(plant);
+        }
+      }
+    }
+    return this.loose.shove(mover, radius, mass, out);
   }
 
   update(x: number, z: number): void {
@@ -153,6 +233,7 @@ export class World {
       ground: this.createGround(cx, cz),
       placements: new Map(),
       colliders: [],
+      rooted: [],
     };
     const rng = seededRng(Math.floor(hash2(cx, cz) * 4294967296));
     const originX = cx * CHUNK_SIZE;
@@ -200,10 +281,13 @@ export class World {
       for (const other of chunk.colliders) {
         if (Math.hypot(other.x - x, other.z - z) < other.r + footprint + 1.5) return false;
       }
+      for (const other of chunk.rooted) {
+        if (other.solid && Math.hypot(other.x - x, other.z - z) < other.r + footprint + 1.5) return false;
+      }
     }
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
-    for (const local of prop.colliders) {
+    for (const local of prop.loose ? [] : prop.colliders) {
       chunk.colliders.push({
         x: x + (local.x * cos + local.z * sin) * scale,
         z: z + (-local.x * sin + local.z * cos) * scale,
@@ -216,8 +300,48 @@ export class World {
       chunk.placements.set(name, list);
     }
     const squash = lerp(0.85, 1.15, rng());
-    writeTransform(list, list.length, x, groundHeight(x, z) - prop.sink * scale, z, yaw, 0, 0, scale, scale * squash, scale);
+    const y = groundHeight(x, z) - prop.sink * scale;
+    if (prop.loose) {
+      const id = cellKey(chunk.cx, chunk.cz) * ROOTED_ID_STRIDE + chunk.rooted.length;
+      const alive = !this.uprooted.has(id);
+      chunk.rooted.push({
+        id,
+        name,
+        x,
+        y,
+        z,
+        r: prop.loose.radius * scale,
+        yaw,
+        scale,
+        scaleY: scale * squash,
+        solid: prop.colliders.length > 0,
+        alive,
+        list,
+        offset: list.length,
+      });
+      if (!alive) return true;
+    }
+    writeTransform(list, list.length, x, y, z, yaw, 0, 0, scale, scale * squash, scale);
     return true;
+  }
+
+  private uproot(plant: Rooted): void {
+    const spec = this.props[plant.name].loose;
+    if (!spec) return;
+    plant.alive = false;
+    this.uprooted.add(plant.id);
+    plant.list.fill(0, plant.offset, plant.offset + 16);
+    this.rebuildInstancesOf(plant.name);
+    this.loose.spawn(plant.name, spec, plant.x, plant.y, plant.z, plant.yaw, plant.scale, plant.scaleY);
+  }
+
+  private renderLoose(): void {
+    for (const [name, batch] of this.looseBatches) {
+      const count = this.loose.write(name, batch.matrices);
+      batch.mesh.thinInstanceCount = count;
+      batch.mesh.setEnabled(count > 0);
+      if (count > 0) batch.mesh.thinInstanceBufferUpdated("matrix");
+    }
   }
 
   private createGround(cx: number, cz: number): Mesh {
@@ -292,30 +416,52 @@ export class World {
   }
 
   private rebuildInstances(): void {
-    for (const [name, prop] of Object.entries(this.props) as Array<[PropName, PropDef]>) {
-      let total = 0;
-      for (const chunk of this.chunks.values()) total += chunk.placements.get(name)?.length ?? 0;
-      if (total === 0) {
-        prop.mesh.thinInstanceCount = 0;
-        prop.mesh.setEnabled(false);
-        continue;
-      }
-      const buffer = new Float32Array(total);
-      let offset = 0;
-      for (const chunk of this.chunks.values()) {
-        const list = chunk.placements.get(name);
-        if (!list) continue;
-        buffer.set(list, offset);
-        offset += list.length;
-      }
-      prop.mesh.thinInstanceSetBuffer("matrix", buffer, 16, true);
-      prop.mesh.setEnabled(true);
+    for (const name of Object.keys(this.props) as PropName[]) this.rebuildInstancesOf(name);
+  }
+
+  private rebuildInstancesOf(name: PropName): void {
+    const prop = this.props[name];
+    let total = 0;
+    for (const chunk of this.chunks.values()) total += chunk.placements.get(name)?.length ?? 0;
+    if (total === 0) {
+      prop.mesh.thinInstanceCount = 0;
+      prop.mesh.setEnabled(false);
+      return;
     }
+    const buffer = new Float32Array(total);
+    let offset = 0;
+    for (const chunk of this.chunks.values()) {
+      const list = chunk.placements.get(name);
+      if (!list) continue;
+      buffer.set(list, offset);
+      offset += list.length;
+    }
+    prop.mesh.thinInstanceSetBuffer("matrix", buffer, 16, true);
+    prop.mesh.setEnabled(true);
   }
 
   private rebuildColliderGrid(): void {
     this.colliderGrid.clear();
+    this.rootedGrid.clear();
     for (const chunk of this.chunks.values()) {
+      for (const plant of chunk.rooted) {
+        if (!plant.alive) continue;
+        const minX = Math.floor((plant.x - plant.r) / COLLIDER_CELL);
+        const maxX = Math.floor((plant.x + plant.r) / COLLIDER_CELL);
+        const minZ = Math.floor((plant.z - plant.r) / COLLIDER_CELL);
+        const maxZ = Math.floor((plant.z + plant.r) / COLLIDER_CELL);
+        for (let gz = minZ; gz <= maxZ; gz++) {
+          for (let gx = minX; gx <= maxX; gx++) {
+            const key = cellKey(gx, gz);
+            let bucket = this.rootedGrid.get(key);
+            if (!bucket) {
+              bucket = [];
+              this.rootedGrid.set(key, bucket);
+            }
+            bucket.push(plant);
+          }
+        }
+      }
       for (const collider of chunk.colliders) {
         const minX = Math.floor((collider.x - collider.r) / COLLIDER_CELL);
         const maxX = Math.floor((collider.x + collider.r) / COLLIDER_CELL);

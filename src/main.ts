@@ -17,6 +17,7 @@ import { BlastPool, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
 import { Hud } from "./hud";
 import { Input } from "./input";
+import type { Shove } from "./loose";
 import { clamp, damp, lerp, randRange, randSigned, saturate } from "./math";
 import { buildPlayerCar, type PlayerCarModel, WHEEL_RADIUS } from "./models";
 import { PALETTE } from "./palette";
@@ -49,6 +50,9 @@ const SHADOW_FRUSTUM = 190;
 const SHADOW_DISTANCE = 160;
 const CAR_RADIUS = 1.45;
 const WALL_BOUNCE = 0.3;
+const PLANT_TWIST = 0.35;
+const PLANT_TWIST_LIMIT = 1.6;
+const PLANT_THUD_IMPULSE = 1.2;
 const SMOKE_PUFFS_PER_SECOND = 22;
 const SMOKE_LIFE_SECONDS = 5.5;
 const SMOKE_GROWTH = 1.25;
@@ -94,6 +98,7 @@ class Game {
   private readonly car = new CarBody();
   private readonly controls: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
+  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
   private readonly cameraTarget = new Vector3();
   private readonly cameraForward = new Vector3();
@@ -290,6 +295,7 @@ class Game {
     this.blasts.clear();
     this.tracks.clear();
     this.smoke.clear();
+    this.world.reset();
     this.world.update(0, 0);
     this.rememberWheels();
     this.carModel.root.setEnabled(true);
@@ -305,6 +311,7 @@ class Game {
   }
 
   private idle(dt: number): void {
+    this.world.step(dt, this.car.x, this.car.z);
     this.blasts.update(dt);
     this.updateSmoke(dt);
     this.updateCarVisuals(dt);
@@ -339,6 +346,7 @@ class Game {
       onPlayerHit: (enemy, damage, closing) => this.hurtPlayer(enemy, damage, closing),
       onKill: (enemy) => this.onEnemyKilled(enemy),
     });
+    this.world.step(dt, this.car.x, this.car.z);
     this.gun.update(dt, this.car, this.stats, this.enemies, this.audio);
     this.enemies.sweepDead((enemy) => this.onEnemyKilled(enemy));
     this.updateBlasts(dt);
@@ -380,6 +388,7 @@ class Game {
 
   private collideCarWithWorld(): void {
     const car = this.car;
+    this.ploughThroughPlants();
     if (!this.world.resolve(car, CAR_RADIUS, this.contact).hit) return;
     const into = car.vx * this.contact.nx + car.vz * this.contact.nz;
     if (into >= 0) return;
@@ -391,6 +400,24 @@ class Game {
       this.shake = Math.max(this.shake, saturate(impact / 25));
       this.audio.thud(impact / 25);
       this.input.rumble(saturate(impact / 20), 0.3, 160);
+    }
+  }
+
+  private ploughThroughPlants(): void {
+    const car = this.car;
+    const speed = Math.hypot(car.vx, car.vz);
+    const dirX = speed > 0.01 ? car.vx / speed : 0;
+    const dirZ = speed > 0.01 ? car.vz / speed : 0;
+    const impulse = this.world.shove(car, CAR_RADIUS, 1, this.shove).impulse;
+    if (impulse <= 0) return;
+    const offX = this.shove.x - car.x;
+    const offZ = this.shove.z - car.z;
+    const twist = (offX * dirZ - offZ * dirX) * impulse * PLANT_TWIST;
+    car.yawRate += clamp(twist, -PLANT_TWIST_LIMIT, PLANT_TWIST_LIMIT);
+    if (impulse > PLANT_THUD_IMPULSE) {
+      this.shake = Math.max(this.shake, saturate(impulse / 14));
+      this.audio.thud(impulse / 10);
+      this.input.rumble(saturate(impulse / 8), 0.2, 120);
     }
   }
 
