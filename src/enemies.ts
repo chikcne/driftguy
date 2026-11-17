@@ -358,6 +358,10 @@ const BOSS_INTERVAL = 150;
 const BOSS_WARNING = 6;
 const THREAT_ARRIVAL_DISTANCE = 42;
 const AHEAD_BIAS = 0.55;
+const SCREEN_LEFT_BEARING = -Math.PI / 2;
+const SCREEN_RIGHT_BEARING = Math.PI / 2;
+const LEFT_SIDE_SHARE = 0.8;
+const SIDE_SPREAD = 0.6;
 const HP_GROWTH_SECONDS = 140;
 const DAMAGE_GROWTH_SECONDS = 420;
 
@@ -397,7 +401,7 @@ export class Spawner {
 
     for (const enemy of enemies.active) {
       if (Math.abs(enemy.x - car.x) < RECYCLE_DISTANCE && Math.abs(enemy.z - car.z) < RECYCLE_DISTANCE) continue;
-      const angle = this.pickAngle(car);
+      const angle = this.pickSideAngle();
       const distance = randRange(SPAWN_RING_MIN, SPAWN_RING_MAX);
       enemy.x = car.x + Math.sin(angle) * distance;
       enemy.z = car.z + Math.cos(angle) * distance;
@@ -407,7 +411,7 @@ export class Spawner {
     this.cooldown -= dt;
     if (this.cooldown <= 0 && enemies.active.length < desired) {
       this.cooldown = SPAWN_COOLDOWN;
-      this.spawnAt(enemies, this.pickKind(time), car, this.pickAngle(car), hpScale);
+      this.spawnAt(enemies, this.pickKind(time), car, this.pickSideAngle(), hpScale);
     }
     if (time >= this.nextWarParty - WAR_PARTY_WARNING) {
       this.nextWarParty += WAR_PARTY_INTERVAL;
@@ -421,7 +425,7 @@ export class Spawner {
   }
 
   private announce(kind: ThreatKind, warning: number, size: number, car: CarBody): void {
-    const threat: Threat = { kind, bearing: this.pickAngle(car), countdown: warning, distance: SPAWN_RING_MIN, size, members: [] };
+    const threat: Threat = { kind, bearing: this.pickWaveAngle(car), countdown: warning, distance: SPAWN_RING_MIN, size, members: [] };
     this.threats.push(threat);
     this.onThreat?.(threat);
   }
@@ -471,7 +475,12 @@ export class Spawner {
     return enemies.spawn(kind, car.x + Math.sin(angle) * distance, car.z + Math.cos(angle) * distance, hpScale, angle + Math.PI);
   }
 
-  private pickAngle(car: CarBody): number {
+  private pickSideAngle(): number {
+    const side = Math.random() < LEFT_SIDE_SHARE ? SCREEN_LEFT_BEARING : SCREEN_RIGHT_BEARING;
+    return side + randSigned(SIDE_SPREAD);
+  }
+
+  private pickWaveAngle(car: CarBody): number {
     if (car.speed > 8 && Math.random() < AHEAD_BIAS) return Math.atan2(car.vx, car.vz) + randSigned(1.0);
     return Math.random() * TAU;
   }
