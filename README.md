@@ -2,4 +2,33 @@
 
 # driftguy
 
-Created in [T3 Code](https://t3.codes).
+A wasteland drift-survival game built with Babylon.js. Your tyre smoke is the weapon: slide the car, engulf the raiders chasing you, collect their scrap, and bolt on upgrades.
+
+## Run
+
+```sh
+pnpm install
+pnpm dev -- --host <address>
+```
+
+`pnpm build` type-checks and produces a static bundle in `dist/`.
+
+## Controls
+
+| Action          | Controller  | Keyboard     |
+| --------------- | ----------- | ------------ |
+| Throttle        | RT          | W / ↑        |
+| Brake / reverse | LT          | S / ↓        |
+| Steer           | Left stick  | A D / ← →    |
+| Handbrake       | B / X / RB  | Space        |
+| Pause           | Start       | Esc          |
+| Mute            |             | M            |
+
+## Layout
+
+- `src/vehicle.ts` — car handling model. `pnpm sim` prints drift telemetry for tuning it without a browser.
+- `src/smoke.ts` — smoke simulation, rendering, and the density grid enemies are damaged through.
+- `src/world.ts`, `src/terrain.ts`, `src/props.ts` — infinite chunked desert and its obstacles.
+- `src/enemies.ts` — raider vehicles and the spawn director.
+- `src/upgrades.ts` — upgrade definitions and the stats derived from them.
+- `src/main.ts` — game loop and state.
