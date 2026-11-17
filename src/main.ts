@@ -12,7 +12,7 @@ import {
   Vector3,
 } from "@babylonjs/core";
 import { GameAudio } from "./audio";
-import { GunSystem, type PickupKind, PickupSystem } from "./combat";
+import { GunSystem, type PickupKind, PickupSystem, REPAIR_CRATE_VALUE, REPAIR_DROP_VALUE } from "./combat";
 import { BlastPool, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
 import { Hud } from "./hud";
@@ -59,8 +59,13 @@ const DUST_PER_METRE = 0.3;
 const HIT_INVULNERABILITY = 0.5;
 const LEVEL_UP_GRACE = 0.6;
 const DEATH_SECONDS = 1.3;
-const REPAIR_HEAL = 20;
 const REPAIR_DROP_CHANCE = 0.025;
+const CRATE_INTERVAL_MIN = 50;
+const CRATE_INTERVAL_MAX = 80;
+const CRATE_DISTANCE_MIN = 45;
+const CRATE_DISTANCE_MAX = 80;
+const CRATE_HEADING_SPREAD = 1.2;
+const CRATE_CLEARANCE = 2.5;
 const BLAST_CHAIN_DELAY = 0.09;
 const TRACK_SLIP_SPEED = 2.5;
 const COMPOUND_BAND_SECONDS = 0.7;
@@ -115,6 +120,7 @@ class Game {
   private deathTimer = 0;
   private smokeOutput = 0;
   private rumbleTimer = 0;
+  private nextCrate = randRange(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX);
 
   constructor(canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas, true, { stencil: false, powerPreference: "high-performance" });
@@ -279,6 +285,7 @@ class Game {
     this.invulnerable = 0;
     this.shake = 0;
     this.pendingBlasts.length = 0;
+    this.nextCrate = randRange(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX);
     this.car.reset();
     this.enemies.clear();
     this.spawner.reset();
@@ -339,6 +346,7 @@ class Game {
     this.gun.update(dt, this.car, this.stats, this.enemies, this.audio);
     this.enemies.sweepDead((enemy) => this.onEnemyKilled(enemy));
     this.updateBlasts(dt);
+    this.updateCrates(dt);
     this.pickups.update(dt, this.car, this.stats.magnetRadius, (kind, value) => this.collect(kind, value));
 
     this.blasts.update(dt);
@@ -491,7 +499,7 @@ class Game {
     const spec = enemy.spec;
     const pieces = Math.min(10, Math.ceil(spec.scrap / 3));
     this.pickups.drop("scrap", enemy.x, enemy.z, pieces, spec.scrap / pieces);
-    if (Math.random() < REPAIR_DROP_CHANCE * (1 + spec.mass * 2)) this.pickups.drop("repair", enemy.x, enemy.z, 1, REPAIR_HEAL);
+    if (Math.random() < REPAIR_DROP_CHANCE * (1 + spec.mass * 2)) this.pickups.drop("repair", enemy.x, enemy.z, 1, REPAIR_DROP_VALUE);
 
     const y = groundHeight(enemy.x, enemy.z) + 1;
     this.blasts.spawn(enemy.x, y, enemy.z, spec.radius * 1.6);
@@ -540,6 +548,18 @@ class Game {
     this.audio.explosion();
     const distance = Math.hypot(x - this.car.x, z - this.car.z);
     this.shake = Math.max(this.shake, 0.5 * saturate(1 - distance / 60));
+  }
+
+  private updateCrates(dt: number): void {
+    this.nextCrate -= dt;
+    if (this.nextCrate > 0) return;
+    this.nextCrate = randRange(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX);
+    const moving = Math.hypot(this.car.vx, this.car.vz) > 1;
+    const heading = moving ? Math.atan2(this.car.vx, this.car.vz) + randSigned(CRATE_HEADING_SPREAD) : Math.random() * Math.PI * 2;
+    const distance = randRange(CRATE_DISTANCE_MIN, CRATE_DISTANCE_MAX);
+    const spot = { x: this.car.x + Math.sin(heading) * distance, z: this.car.z + Math.cos(heading) * distance };
+    this.world.resolve(spot, CRATE_CLEARANCE, { hit: false, nx: 0, nz: 0 });
+    this.pickups.place("repair", spot.x, spot.z, REPAIR_CRATE_VALUE);
   }
 
   private collect(kind: PickupKind, value: number): void {

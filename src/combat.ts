@@ -120,6 +120,8 @@ interface Pickup {
   attracted: boolean;
 }
 
+export const REPAIR_DROP_VALUE = 20;
+export const REPAIR_CRATE_VALUE = 35;
 const MAX_PICKUPS = 500;
 const COLLECT_RADIUS = 2.2;
 const MAGNET_ACCEL = 90;
@@ -170,6 +172,11 @@ export class PickupSystem {
     }
   }
 
+  place(kind: PickupKind, x: number, z: number, value: number): void {
+    if (this.items.length >= MAX_PICKUPS) return;
+    this.items.push({ kind, x, z, vx: 0, vz: 0, value, phase: Math.random() * TAU, attracted: false });
+  }
+
   update(dt: number, car: CarBody, magnetRadius: number, onCollect: (kind: PickupKind, value: number) => void): void {
     const friction = Math.exp(-SCATTER_FRICTION * dt);
     for (let i = this.items.length - 1; i >= 0; i--) {
@@ -215,7 +222,8 @@ export class PickupSystem {
         const size = item.value >= 5 ? 1.5 : item.value >= 2 ? 1.15 : 0.9;
         this.scrapBatch.push(item.x, y, item.z, spin, 0.4, 0, size, size, size);
       } else {
-        this.repairBatch.push(item.x, y + 0.2, item.z, spin, 0, 0, 1.2, 1.2, 1.2);
+        const size = item.value > REPAIR_DROP_VALUE ? 2 : 1.2;
+        this.repairBatch.push(item.x, y + 0.2, item.z, spin, 0, 0, size, size, size);
       }
     }
     this.scrapBatch.commit();
