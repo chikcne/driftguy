@@ -1,5 +1,6 @@
 import { Material, Scene, ShadowGenerator } from "@babylonjs/core";
 import { InstanceBatch } from "./kit";
+import type { Shove } from "./loose";
 import { clamp, moveToward, randRange, randSigned, TAU, wrapAngle } from "./math";
 import { buildEnemyModels, type EnemyKind } from "./models";
 import { createSmokeSample, PUFF, type SmokeSystem } from "./smoke";
@@ -88,6 +89,7 @@ export class EnemySystem {
   private readonly batches: Record<EnemyKind, InstanceBatch>;
   private readonly sample = createSmokeSample();
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
+  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
 
   constructor(scene: Scene, material: Material, shadows: ShadowGenerator) {
@@ -191,6 +193,7 @@ export class EnemySystem {
           enemy.vz -= into * this.contact.nz * 1.2;
         }
       }
+      ctx.world.shove(enemy, spec.radius, spec.mass, this.shove);
       this.collideWithCar(enemy, ctx);
 
       enemy.dustTimer -= dt;

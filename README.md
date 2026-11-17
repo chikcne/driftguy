@@ -29,6 +29,7 @@ pnpm dev -- --host <address>
 - `src/vehicle.ts` — car handling model. `pnpm sim` prints drift telemetry for tuning it without a browser.
 - `src/smoke.ts` — smoke simulation, rendering, and the density grid enemies are damaged through.
 - `src/world.ts`, `src/terrain.ts`, `src/props.ts` — infinite chunked desert and its obstacles.
+- `src/loose.ts` — tumbling physics for plants knocked out of the ground. `pnpm plant-sim` prints what a hit costs the car.
 - `src/enemies.ts` — raider vehicles and the spawn director.
 - `src/upgrades.ts` — upgrade definitions and the stats derived from them.
 - `src/main.ts` — game loop and state.
