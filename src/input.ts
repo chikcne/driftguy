@@ -75,7 +75,7 @@ export class Input {
     let steer = (down("KeyD") || down("ArrowRight") ? 1 : 0) - (down("KeyA") || down("ArrowLeft") ? 1 : 0);
     let handbrake = down("Space") || down("ShiftLeft") || down("ShiftRight");
     let menuMove = (pressed("KeyD") || pressed("ArrowRight") ? 1 : 0) - (pressed("KeyA") || pressed("ArrowLeft") ? 1 : 0);
-    let confirm = pressed("Enter") || pressed("Space");
+    let confirm = pressed("Enter");
     let pause = pressed("Escape") || pressed("KeyP");
     this.mute = pressed("KeyM");
 
