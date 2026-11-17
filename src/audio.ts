@@ -110,6 +110,12 @@ export class GameAudio {
     [392, 311, 233, 155].forEach((frequency, i) => this.tone(frequency, 0.3, 0.14, "sawtooth", i * 0.16));
   }
 
+  warning(heavy: boolean): void {
+    const frequency = heavy ? 196 : 740;
+    const beeps = heavy ? 4 : 2;
+    for (let i = 0; i < beeps; i++) this.tone(frequency, 0.14, heavy ? 0.16 : 0.1, heavy ? "sawtooth" : "square", i * 0.2);
+  }
+
   private tone(frequency: number, duration: number, volume: number, type: OscillatorType, delay: number): void {
     const context = this.context;
     if (!context || !this.master) return;

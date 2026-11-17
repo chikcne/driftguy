@@ -1,3 +1,4 @@
+import type { Threat, ThreatKind } from "./enemies";
 import { type UpgradeCategory, type UpgradeDef, type UpgradeLevels, UPGRADES } from "./upgrades";
 
 const CATEGORY_COLOR: Record<UpgradeCategory, string> = {
@@ -15,6 +16,26 @@ const CATEGORY_LABEL: Record<UpgradeCategory, string> = {
   weapon: "Weapon",
   repair: "Repair",
 };
+
+const THREAT_LABEL: Record<ThreatKind, string> = {
+  party: "War party",
+  boss: "War rig",
+};
+
+const THREAT_SIDE_MARGIN = 96;
+const THREAT_VERTICAL_MARGIN = 132;
+const THREAT_TAG_OFFSET = 62;
+const GROUND_FORESHORTENING = 0.8;
+
+interface ThreatMarker {
+  root: HTMLElement;
+  arrow: HTMLElement;
+  tag: HTMLElement;
+  name: HTMLElement;
+  detail: HTMLElement;
+  shownKind: ThreatKind | null;
+  shownDetail: string;
+}
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -58,6 +79,8 @@ export class Hud {
   private readonly padStatus = element("pad-status");
   private readonly padControls = element("pad-controls");
   private readonly keyControls = element("key-controls");
+  private readonly threats = element("threats");
+  private readonly threatMarkers: ThreatMarker[] = [];
   private choices: UpgradeDef[] = [];
   private selected = 0;
   private shown = { timer: "", kills: -1, speed: -1, level: -1, hull: "" };
@@ -125,6 +148,37 @@ export class Hud {
     this.loadout.replaceChildren(...items);
   }
 
+  setThreats(threats: readonly Threat[]): void {
+    const halfWidth = window.innerWidth / 2;
+    const halfHeight = window.innerHeight / 2;
+    const reachX = Math.max(1, halfWidth - THREAT_SIDE_MARGIN);
+    const reachY = Math.max(1, halfHeight - THREAT_VERTICAL_MARGIN);
+    for (let i = 0; i < threats.length; i++) {
+      const threat = threats[i];
+      const marker = this.threatMarkers[i] ?? this.addThreatMarker();
+      const incoming = threat.countdown > 0;
+      const rawX = Math.sin(threat.bearing);
+      const rawY = -Math.cos(threat.bearing) * GROUND_FORESHORTENING;
+      const length = Math.hypot(rawX, rawY) || 1;
+      const dirX = rawX / length;
+      const dirY = rawY / length;
+      const reach = Math.min(reachX / Math.max(Math.abs(dirX), 0.0001), reachY / Math.max(Math.abs(dirY), 0.0001));
+      marker.root.hidden = false;
+      marker.root.style.transform = `translate(${(halfWidth + dirX * reach).toFixed(1)}px, ${(halfHeight + dirY * reach).toFixed(1)}px)`;
+      marker.arrow.style.transform = `translate(-50%, -50%) rotate(${Math.atan2(dirY, dirX).toFixed(3)}rad)`;
+      marker.tag.style.transform = `translate(-50%, -50%) translate(${(-dirX * THREAT_TAG_OFFSET).toFixed(1)}px, ${(-dirY * THREAT_TAG_OFFSET).toFixed(1)}px)`;
+      marker.root.classList.toggle("incoming", incoming);
+      if (threat.kind !== marker.shownKind) {
+        marker.shownKind = threat.kind;
+        marker.root.classList.toggle("boss", threat.kind === "boss");
+        marker.name.textContent = THREAT_LABEL[threat.kind];
+      }
+      const detail = incoming ? `${threat.countdown.toFixed(1)} s` : `${Math.round(threat.distance)} m`;
+      if (detail !== marker.shownDetail) marker.detail.textContent = marker.shownDetail = detail;
+    }
+    for (let i = threats.length; i < this.threatMarkers.length; i++) this.threatMarkers[i].root.hidden = true;
+  }
+
   flashDamage(): void {
     this.hitVignette.classList.add("flash");
     requestAnimationFrame(() => requestAnimationFrame(() => this.hitVignette.classList.remove("flash")));
@@ -168,6 +222,22 @@ export class Hud {
   confirmSelection(): void {
     const choice = this.choices[this.selected];
     if (choice) this.onPick?.(choice);
+  }
+
+  private addThreatMarker(): ThreatMarker {
+    const root = document.createElement("div");
+    root.className = "threat";
+    const arrow = this.cardLine("threat-arrow", "");
+    const name = this.cardLine("threat-name", "");
+    const detail = this.cardLine("threat-detail", "");
+    const tag = document.createElement("div");
+    tag.className = "threat-tag";
+    tag.append(name, detail);
+    root.append(arrow, tag);
+    this.threats.append(root);
+    const marker: ThreatMarker = { root, arrow, tag, name, detail, shownKind: null, shownDetail: "" };
+    this.threatMarkers.push(marker);
+    return marker;
   }
 
   private select(index: number): void {

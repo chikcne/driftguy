@@ -52,6 +52,8 @@ const WALL_BOUNCE = 0.3;
 const SMOKE_PUFFS_PER_SECOND = 22;
 const SMOKE_LIFE_SECONDS = 5.5;
 const SMOKE_GROWTH = 1.25;
+const SMOKE_CARRY = 0.45;
+const SMOKE_FLING = 1.5;
 const FRONT_SMOKE_SLIP = 6;
 const DUST_PER_METRE = 0.3;
 const HIT_INVULNERABILITY = 0.5;
@@ -205,6 +207,7 @@ class Game {
     this.hud.onStart = () => this.startRun();
     this.hud.onRetry = () => this.startRun();
     this.hud.onPick = (upgrade) => this.applyUpgrade(upgrade);
+    this.spawner.onThreat = (threat) => this.audio.warning(threat.kind === "boss");
 
     this.resetRun();
     this.snapCamera();
@@ -261,6 +264,7 @@ class Game {
     this.hud.showPause(phase === "paused");
     this.hud.showPlaying(phase !== "title");
     if (phase !== "levelup") this.hud.closeLevelUp();
+    if (phase === "dying" || phase === "gameover") this.hud.setThreats([]);
     this.hud.showGameOver(phase === "gameover" ? { seconds: this.time, kills: this.kills, level: this.level } : null);
   }
 
@@ -357,6 +361,7 @@ class Game {
       this.car.speed * 3.6,
       this.smokeOutput,
     );
+    this.hud.setThreats(this.spawner.threats);
 
     if (this.hp <= 0) {
       this.die();
@@ -439,15 +444,16 @@ class Game {
           const t = (i + Math.random()) / count;
           const x = lerp(fromX, spot.x, t);
           const z = lerp(fromZ, spot.z, t);
-          const fling = car.burnout * 5 + 1;
+          const fling = SMOKE_FLING + car.burnout * 5 + Math.min(4, slipSpeed * 0.3);
+          const spill = (wheel % 2 === 0 ? -1 : 1) * randRange(0.2, 1.4);
           this.smoke.emit(
             this.pickSmokeKind(),
             x,
             groundHeight(x, z) + 0.35,
             z,
-            car.vx * 0.3 - fx * fling + randSigned(1.4),
+            car.vx * SMOKE_CARRY - fx * fling + fz * spill + randSigned(0.6),
             randRange(1, 2.6),
-            car.vz * 0.3 - fz * fling + randSigned(1.4),
+            car.vz * SMOKE_CARRY - fz * fling - fx * spill + randSigned(0.6),
             randRange(0.7, 1.0),
             SMOKE_GROWTH * stats.smokeSpread * randRange(0.85, 1.15),
             SMOKE_LIFE_SECONDS * stats.smokeLife * randRange(0.8, 1.2),

@@ -207,6 +207,71 @@ body {
   color: var(--accent, var(--paper));
 }
 
+.threat {
+  --threat: var(--scrap);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+}
+
+.threat.boss {
+  --threat: var(--flame);
+}
+
+.threat-arrow {
+  position: absolute;
+  width: 44px;
+  height: 52px;
+  background: var(--threat);
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 28% 50%);
+  filter: drop-shadow(0 3px 0 var(--ink)) drop-shadow(0 0 8px rgba(43, 29, 26, 0.7));
+}
+
+.threat.boss .threat-arrow {
+  width: 58px;
+  height: 68px;
+}
+
+.threat.incoming .threat-arrow {
+  animation: threat-blink 0.45s steps(2, jump-none) infinite;
+}
+
+.threat-tag {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  background: var(--panel);
+  border-radius: 3px;
+  border-bottom: 3px solid var(--threat);
+  text-shadow: none;
+}
+
+.threat-name {
+  font-size: 11px;
+  color: var(--threat);
+}
+
+.threat-detail {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes threat-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.5;
+  }
+}
+
 .screen {
   position: fixed;
   inset: 0;

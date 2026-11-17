@@ -352,17 +352,35 @@ const SPAWN_RING_MAX = 105;
 const RECYCLE_DISTANCE = 175;
 const SPAWN_COOLDOWN = 0.1;
 const WAR_PARTY_INTERVAL = 60;
+const WAR_PARTY_WARNING = 4;
+const WAR_PARTY_SPREAD = 0.22;
 const BOSS_INTERVAL = 150;
+const BOSS_WARNING = 6;
+const THREAT_ARRIVAL_DISTANCE = 42;
 const AHEAD_BIAS = 0.55;
 const HP_GROWTH_SECONDS = 140;
 const DAMAGE_GROWTH_SECONDS = 420;
 
+export type ThreatKind = "party" | "boss";
+
+export interface Threat {
+  kind: ThreatKind;
+  bearing: number;
+  countdown: number;
+  distance: number;
+  size: number;
+  members: Enemy[];
+}
+
 export class Spawner {
+  readonly threats: Threat[] = [];
+  onThreat: ((threat: Threat) => void) | null = null;
   private cooldown = 0;
   private nextWarParty = WAR_PARTY_INTERVAL;
   private nextBoss = BOSS_INTERVAL;
 
   reset(): void {
+    this.threats.length = 0;
     this.cooldown = 0;
     this.nextWarParty = WAR_PARTY_INTERVAL;
     this.nextBoss = BOSS_INTERVAL;
@@ -391,21 +409,66 @@ export class Spawner {
       this.cooldown = SPAWN_COOLDOWN;
       this.spawnAt(enemies, this.pickKind(time), car, this.pickAngle(car), hpScale);
     }
-    if (time >= this.nextWarParty) {
+    if (time >= this.nextWarParty - WAR_PARTY_WARNING) {
       this.nextWarParty += WAR_PARTY_INTERVAL;
-      const angle = this.pickAngle(car);
-      const size = Math.min(26, 6 + Math.floor(time / 25));
-      for (let i = 0; i < size; i++) this.spawnAt(enemies, "bike", car, angle + randSigned(0.22), hpScale);
+      this.announce("party", WAR_PARTY_WARNING, Math.min(26, 6 + Math.floor(time / 25)), car);
     }
-    if (time >= this.nextBoss) {
+    if (time >= this.nextBoss - BOSS_WARNING) {
       this.nextBoss += BOSS_INTERVAL;
-      this.spawnAt(enemies, "rig", car, this.pickAngle(car), hpScale);
+      this.announce("boss", BOSS_WARNING, 1, car);
+    }
+    this.updateThreats(dt, car, enemies, hpScale);
+  }
+
+  private announce(kind: ThreatKind, warning: number, size: number, car: CarBody): void {
+    const threat: Threat = { kind, bearing: this.pickAngle(car), countdown: warning, distance: SPAWN_RING_MIN, size, members: [] };
+    this.threats.push(threat);
+    this.onThreat?.(threat);
+  }
+
+  private updateThreats(dt: number, car: CarBody, enemies: EnemySystem, hpScale: number): void {
+    for (let i = this.threats.length - 1; i >= 0; i--) {
+      const threat = this.threats[i];
+      if (threat.countdown > 0) {
+        threat.countdown -= dt;
+        if (threat.countdown > 0) continue;
+        this.release(threat, car, enemies, hpScale);
+      }
+      if (!this.track(threat, car)) this.threats.splice(i, 1);
     }
   }
 
-  private spawnAt(enemies: EnemySystem, kind: EnemyKind, car: CarBody, angle: number, hpScale: number): void {
+  private release(threat: Threat, car: CarBody, enemies: EnemySystem, hpScale: number): void {
+    const kind: EnemyKind = threat.kind === "boss" ? "rig" : "bike";
+    const spread = threat.kind === "boss" ? 0 : WAR_PARTY_SPREAD;
+    for (let i = 0; i < threat.size; i++) {
+      const enemy = this.spawnAt(enemies, kind, car, threat.bearing + randSigned(spread), hpScale);
+      if (enemy) threat.members.push(enemy);
+    }
+  }
+
+  private track(threat: Threat, car: CarBody): boolean {
+    let x = 0;
+    let z = 0;
+    let alive = 0;
+    for (const enemy of threat.members) {
+      if (enemy.hp <= 0) continue;
+      x += enemy.x - car.x;
+      z += enemy.z - car.z;
+      alive++;
+    }
+    if (alive === 0) return false;
+    x /= alive;
+    z /= alive;
+    threat.distance = Math.hypot(x, z);
+    if (threat.distance < THREAT_ARRIVAL_DISTANCE) return false;
+    threat.bearing = Math.atan2(x, z);
+    return true;
+  }
+
+  private spawnAt(enemies: EnemySystem, kind: EnemyKind, car: CarBody, angle: number, hpScale: number): Enemy | null {
     const distance = randRange(SPAWN_RING_MIN, SPAWN_RING_MAX);
-    enemies.spawn(kind, car.x + Math.sin(angle) * distance, car.z + Math.cos(angle) * distance, hpScale, angle + Math.PI);
+    return enemies.spawn(kind, car.x + Math.sin(angle) * distance, car.z + Math.cos(angle) * distance, hpScale, angle + Math.PI);
   }
 
   private pickAngle(car: CarBody): number {
