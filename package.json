@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "sim": "tsx tools/drive-sim.ts"
+    "sim": "tsx tools/drive-sim.ts",
+    "smoke-bench": "tsx tools/smoke-bench.ts"
   },
   "dependencies": {
     "@babylonjs/core": "^9.37.0"

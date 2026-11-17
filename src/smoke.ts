@@ -1,5 +1,5 @@
 import { Buffer, Color3, Effect, Mesh, RawTexture, Scene, ShaderMaterial, Texture, Vector2, Vector3, VertexBuffer } from "@babylonjs/core";
-import { saturate, smoothstep } from "./math";
+import { saturate, smoothstep, TAU } from "./math";
 import { groundHeight } from "./terrain";
 
 export const PUFF = {
@@ -38,12 +38,41 @@ const GRID_HALF = GRID_SPAN / 2;
 const SAMPLE_REACH_CELLS = 2;
 const MAX_RADIUS = SAMPLE_REACH_CELLS * GRID_CELL;
 const AIR_DRAG = 2.2;
+const JET_DRAG = 0.35;
 const HEAT_FADE_SECONDS = 1.1;
 const HOT_RISE_SPEED = 2.6;
 const COOL_RISE_SPEED = 0.3;
 const CEILING_HEIGHT = 4.2;
 const GROUND_HUG = 0.3;
-const WAKE_RADIUS = 4.5;
+const WAKE_PULL = 4;
+const WAKE_CARRY = 0.6;
+const WAKE_LEAD = 2;
+const WAKE_HALF_WIDTH = 1.8;
+const WAKE_FLARE = 0.22;
+const WAKE_INFLOW = 0.25;
+const BOW_PUSH = 0.35;
+const WAKE_UPWASH = 0.08;
+const WAKE_CHURN = 3;
+const VIGOR_FADE_SECONDS = 1.8;
+const VIGOR_MAX = 1.6;
+const BILLOW_WAVENUMBER = 0.85;
+const BILLOW_HEIGHT_WAVENUMBER = 0.57;
+const BILLOW_ROLL = BILLOW_HEIGHT_WAVENUMBER / BILLOW_WAVENUMBER;
+const BILLOW_CALM = 0.45;
+const BILLOW_GAIN = 2.6;
+const EDDY_WAVENUMBER = 2.2;
+const EDDY_SHEAR = 1.3;
+const EDDY_CALM = 0.2;
+const EDDY_GAIN = 1.8;
+const BILLOW_SPIN = 0.8;
+const EDDY_SPIN = 1.1;
+const DEPTH_BUCKETS = 2048;
+const WAVE_SIZE = 4096;
+const WAVE_MASK = WAVE_SIZE - 1;
+const WAVE_QUARTER = WAVE_SIZE / 4;
+const WAVE_SCALE = WAVE_SIZE / TAU;
+const WAVE = new Float32Array(WAVE_SIZE);
+for (let i = 0; i < WAVE_SIZE; i++) WAVE[i] = Math.sin((i / WAVE_SIZE) * TAU);
 const DILUTION_EXPONENT = 0.8;
 const TILE_SIZE = 128;
 const ATLAS_TILES = 2;
@@ -203,6 +232,7 @@ export class SmokeSystem {
   private readonly density = new Float32Array(MAX_PUFFS);
   private readonly strength = new Float32Array(MAX_PUFFS);
   private readonly heat = new Float32Array(MAX_PUFFS);
+  private readonly vigor = new Float32Array(MAX_PUFFS);
   private readonly floor = new Float32Array(MAX_PUFFS);
   private readonly spin = new Float32Array(MAX_PUFFS);
   private readonly spinRate = new Float32Array(MAX_PUFFS);
@@ -215,6 +245,8 @@ export class SmokeSystem {
   private gridOriginZ = 0;
 
   private readonly depth = new Float32Array(MAX_PUFFS);
+  private readonly depthKey = new Uint16Array(MAX_PUFFS);
+  private readonly bucketStart = new Uint32Array(DEPTH_BUCKETS + 1);
   private readonly order = new Uint16Array(MAX_PUFFS);
   private readonly positions = new Float32Array(MAX_PUFFS * 12);
   private readonly colors = new Float32Array(MAX_PUFFS * 16);
@@ -314,21 +346,41 @@ export class SmokeSystem {
     this.density[i] = density;
     this.strength[i] = 0;
     this.heat[i] = heat;
+    this.vigor[i] = Math.min(VIGOR_MAX, 0.35 + Math.hypot(vx, vy, vz) * 0.12);
     this.floor[i] = groundHeight(x, z);
     this.spin[i] = Math.random() * Math.PI * 2;
-    this.spinRate[i] = (Math.random() - 0.5) * 1.2;
+    this.spinRate[i] = (Math.random() - 0.5) * 0.5;
     this.tile[i] = Math.floor(Math.random() * ATLAS_TILES * ATLAS_TILES);
   }
 
   update(dt: number, env: SmokeEnvironment): void {
     this.frame++;
-    const drag = 1 - Math.exp(-AIR_DRAG * dt);
     const t = env.time;
     const prevailingAngle = t * 0.05;
     const prevailingX = Math.cos(prevailingAngle) * 1.1;
     const prevailingZ = Math.sin(prevailingAngle) * 1.1;
+    const heatKeep = Math.exp(-dt / HEAT_FADE_SECONDS);
+    const vigorKeep = Math.exp(-dt / VIGOR_FADE_SECONDS);
+
     const carSpeed = Math.hypot(env.carVx, env.carVz);
-    const wakeGain = saturate(carSpeed / 6) * 4 * dt;
+    const moving = carSpeed > 0.5;
+    const travelX = moving ? env.carVx / carSpeed : env.carFx;
+    const travelZ = moving ? env.carVz / carSpeed : env.carFz;
+    const wakeGate = saturate(carSpeed / 6);
+    const wakeLength = Math.min(12, 2.5 + carSpeed * 0.4);
+    const wakeReach = wakeLength + WAKE_LEAD;
+    const wakeReachSq = wakeGate > 0 ? wakeReach * wakeReach : 0;
+    const fanReachSq = env.fanPower > 0 ? env.fanRange * env.fanRange : 0;
+    const nearSq = Math.max(wakeReachSq, fanReachSq);
+
+    const windPhase1X = t * 0.25;
+    const windPhase1Z = -t * 0.21;
+    const windPhase2X = -t * 0.6;
+    const windPhase2Z = t * 0.5;
+    const billowPhaseX = t * 0.9;
+    const billowPhaseZ = -t * 0.7;
+    const eddyPhaseX = -t * 1.9;
+    const eddyPhaseZ = t * 1.6;
 
     for (let i = this.count - 1; i >= 0; i--) {
       const age = this.age[i] + dt;
@@ -339,43 +391,90 @@ export class SmokeSystem {
       this.age[i] = age;
       let x = this.px[i];
       let z = this.pz[i];
+      const floor = this.floor[i];
+      const height = this.py[i] - floor;
+      const radius = Math.min(MAX_RADIUS, this.startRadius[i] + this.growth[i] * Math.sqrt(age));
+      let vigor = this.vigor[i] * vigorKeep;
+      const warmth = this.heat[i] * heatKeep;
+      this.heat[i] = warmth;
 
-      const a1 = x * 0.07 + t * 0.25;
-      const b1 = z * 0.07 - t * 0.21;
-      const a2 = x * 0.23 - t * 0.6;
-      const b2 = z * 0.23 + t * 0.5;
-      const windX = prevailingX - 1.0 * Math.sin(a1) * Math.sin(b1) - 0.8 * Math.sin(a2) * Math.sin(b2);
-      const windZ = prevailingZ - 1.0 * Math.cos(a1) * Math.cos(b1) - 0.8 * Math.cos(a2) * Math.cos(b2);
+      const a1 = ((x * 0.07 + windPhase1X) * WAVE_SCALE) | 0;
+      const b1 = ((z * 0.07 + windPhase1Z) * WAVE_SCALE) | 0;
+      const a2 = ((x * 0.23 + windPhase2X) * WAVE_SCALE) | 0;
+      const b2 = ((z * 0.23 + windPhase2Z) * WAVE_SCALE) | 0;
+      let flowX = prevailingX - WAVE[a1 & WAVE_MASK] * WAVE[b1 & WAVE_MASK] - 0.8 * WAVE[a2 & WAVE_MASK] * WAVE[b2 & WAVE_MASK];
+      let flowZ =
+        prevailingZ -
+        WAVE[(a1 + WAVE_QUARTER) & WAVE_MASK] * WAVE[(b1 + WAVE_QUARTER) & WAVE_MASK] -
+        0.8 * WAVE[(a2 + WAVE_QUARTER) & WAVE_MASK] * WAVE[(b2 + WAVE_QUARTER) & WAVE_MASK];
 
-      let vx = this.vx[i] + (windX - this.vx[i]) * drag;
-      let vz = this.vz[i] + (windZ - this.vz[i]) * drag;
-      const warmth = this.heat[i] * Math.exp(-age / HEAT_FADE_SECONDS);
-      let vy = this.vy[i] + (COOL_RISE_SPEED + HOT_RISE_SPEED * warmth - this.vy[i]) * drag;
+      const a3 = ((x * BILLOW_WAVENUMBER + billowPhaseX) * WAVE_SCALE) | 0;
+      const b3 = ((z * BILLOW_WAVENUMBER + billowPhaseZ) * WAVE_SCALE) | 0;
+      const c3 = (height * BILLOW_HEIGHT_WAVENUMBER * WAVE_SCALE) | 0;
+      const sinA = WAVE[a3 & WAVE_MASK];
+      const cosA = WAVE[(a3 + WAVE_QUARTER) & WAVE_MASK];
+      const sinB = WAVE[b3 & WAVE_MASK];
+      const cosB = WAVE[(b3 + WAVE_QUARTER) & WAVE_MASK];
+      const sinC = WAVE[c3 & WAVE_MASK];
+      const cosC = WAVE[(c3 + WAVE_QUARTER) & WAVE_MASK];
+      const billow = BILLOW_CALM + BILLOW_GAIN * vigor;
+      flowX += billow * (BILLOW_ROLL * cosA * cosC - sinA * sinB);
+      flowZ += billow * (BILLOW_ROLL * sinB * cosC - cosA * cosB);
+      const flowY = COOL_RISE_SPEED + HOT_RISE_SPEED * warmth + billow * (sinA - cosB) * sinC;
+
+      const a4 = ((x * EDDY_WAVENUMBER + height * EDDY_SHEAR + eddyPhaseX) * WAVE_SCALE) | 0;
+      const b4 = ((z * EDDY_WAVENUMBER + eddyPhaseZ) * WAVE_SCALE) | 0;
+      const sinE = WAVE[a4 & WAVE_MASK];
+      const cosF = WAVE[(b4 + WAVE_QUARTER) & WAVE_MASK];
+      const eddy = (EDDY_CALM + EDDY_GAIN * vigor) / (1 + 0.35 * radius);
+      flowX -= eddy * sinE * WAVE[b4 & WAVE_MASK];
+      flowZ -= eddy * WAVE[(a4 + WAVE_QUARTER) & WAVE_MASK] * cosF;
+
+      let vx = this.vx[i];
+      let vy = this.vy[i];
+      let vz = this.vz[i];
+      const slipX = flowX - vx;
+      const slipY = flowY - vy;
+      const slipZ = flowZ - vz;
+      const dragStep = (AIR_DRAG + JET_DRAG * Math.sqrt(slipX * slipX + slipY * slipY + slipZ * slipZ)) * dt;
+      const follow = dragStep / (1 + dragStep);
+      vx += slipX * follow;
+      vy += slipY * follow;
+      vz += slipZ * follow;
 
       const dx = x - env.carX;
       const dz = z - env.carZ;
       const distSq = dx * dx + dz * dz;
-      if (distSq < WAKE_RADIUS * WAKE_RADIUS) {
-        const dist = Math.sqrt(distSq);
-        const pull = (1 - dist / WAKE_RADIUS) * wakeGain;
-        const side = dx * env.carFz - dz * env.carFx >= 0 ? 1 : -1;
-        vx += (env.carVx * 0.55 - vx) * pull + env.carFz * side * carSpeed * 0.35 * pull;
-        vz += (env.carVz * 0.55 - vz) * pull - env.carFx * side * carSpeed * 0.35 * pull;
-        vy += carSpeed * 0.08 * pull;
-      }
-      if (env.fanPower > 0 && distSq < env.fanRange * env.fanRange && distSq > 0.01) {
-        const dist = Math.sqrt(distSq);
-        const behind = saturate(0.3 - (dx * env.carFx + dz * env.carFz) / dist);
-        const push = env.fanPower * (1 - dist / env.fanRange) * (0.4 + 0.6 * behind) * dt;
-        vx += (dx / dist) * push;
-        vz += (dz / dist) * push;
+      if (distSq < nearSq) {
+        if (distSq < wakeReachSq) {
+          const behind = -(dx * travelX + dz * travelZ);
+          const across = dx * travelZ - dz * travelX;
+          const halfWidth = WAKE_HALF_WIDTH + (behind > 0 ? behind * WAKE_FLARE : 0);
+          const offset = across / halfWidth;
+          const core = 1 - offset * offset;
+          const taper = behind < 0 ? 1 + behind / WAKE_LEAD : 1 - behind / wakeLength;
+          if (core > 0 && taper > 0) {
+            const hold = wakeGate * core * taper;
+            const pull = Math.min(1, hold * WAKE_PULL * dt);
+            const sideways = (behind < 0 ? BOW_PUSH * (across >= 0 ? 1 : -1) : behind > 1 ? -WAKE_INFLOW * offset : 0) * carSpeed * pull;
+            vx += (env.carVx * WAKE_CARRY - vx) * pull + travelZ * sideways;
+            vz += (env.carVz * WAKE_CARRY - vz) * pull - travelX * sideways;
+            vy += carSpeed * WAKE_UPWASH * pull;
+            vigor = Math.min(VIGOR_MAX, vigor + hold * WAKE_CHURN * dt);
+          }
+        }
+        if (distSq < fanReachSq && distSq > 0.01) {
+          const dist = Math.sqrt(distSq);
+          const behind = saturate(0.3 - (dx * env.carFx + dz * env.carFz) / dist);
+          const push = env.fanPower * (1 - dist / env.fanRange) * (0.4 + 0.6 * behind) * dt;
+          vx += (dx / dist) * push;
+          vz += (dz / dist) * push;
+        }
       }
 
       x += vx * dt;
       z += vz * dt;
       if (((i + this.frame) & FLOOR_REFRESH_MASK) === 0) this.floor[i] = groundHeight(x, z);
-      const radius = Math.min(MAX_RADIUS, this.startRadius[i] + this.growth[i] * Math.sqrt(age));
-      const floor = this.floor[i];
       let y = this.py[i] + vy * dt;
       const ceiling = floor + CEILING_HEIGHT + radius * 0.4;
       if (y > ceiling) vy -= (y - ceiling) * 3 * dt;
@@ -396,7 +495,8 @@ export class SmokeSystem {
       this.vx[i] = vx;
       this.vy[i] = vy;
       this.vz[i] = vz;
-      this.spin[i] += this.spinRate[i] * dt;
+      this.vigor[i] = vigor;
+      this.spin[i] += (this.spinRate[i] + BILLOW_SPIN * billow * sinA * cosB + EDDY_SPIN * eddy * sinE * cosF) * dt;
     }
 
     this.rebuildGrid(env.carX, env.carZ);
@@ -425,8 +525,10 @@ export class SmokeSystem {
             out.total += contribution;
             out.byKind[this.kind[i]] += contribution;
             if (stirGain > 0) {
+              const churn = Math.hypot(stirVx - this.vx[i], stirVz - this.vz[i]) * stirGain;
               this.vx[i] += (stirVx - this.vx[i]) * stirGain;
               this.vz[i] += (stirVz - this.vz[i]) * stirGain;
+              this.vigor[i] = Math.min(VIGOR_MAX, this.vigor[i] + churn * 0.12);
             }
           }
           i = this.gridNext[i];
@@ -447,6 +549,7 @@ export class SmokeSystem {
       this.vx[i] += (dx / dist) * kick;
       this.vz[i] += (dz / dist) * kick;
       this.vy[i] += kick * 0.25;
+      this.vigor[i] = VIGOR_MAX;
     }
   }
 
@@ -467,6 +570,7 @@ export class SmokeSystem {
     this.density[i] = this.density[last];
     this.strength[i] = this.strength[last];
     this.heat[i] = this.heat[last];
+    this.vigor[i] = this.vigor[last];
     this.floor[i] = this.floor[last];
     this.spin[i] = this.spin[last];
     this.spinRate[i] = this.spinRate[last];
@@ -493,12 +597,26 @@ export class SmokeSystem {
     const n = this.count;
     const forward = env.cameraForward;
     const depth = this.depth;
+    let nearest = Infinity;
+    let farthest = -Infinity;
     for (let i = 0; i < n; i++) {
-      depth[i] = this.px[i] * forward.x + this.py[i] * forward.y + this.pz[i] * forward.z;
-      this.order[i] = i;
+      const d = this.px[i] * forward.x + this.py[i] * forward.y + this.pz[i] * forward.z;
+      depth[i] = d;
+      if (d < nearest) nearest = d;
+      if (d > farthest) farthest = d;
     }
-    const sorted = this.order.subarray(0, n);
-    sorted.sort((a, b) => depth[b] - depth[a]);
+    const bucketStart = this.bucketStart;
+    const depthKey = this.depthKey;
+    const sorted = this.order;
+    const bucketScale = farthest > nearest ? (DEPTH_BUCKETS - 1) / (farthest - nearest) : 0;
+    bucketStart.fill(0);
+    for (let i = 0; i < n; i++) {
+      const key = ((farthest - depth[i]) * bucketScale) | 0;
+      depthKey[i] = key;
+      bucketStart[key + 1]++;
+    }
+    for (let bucket = 0; bucket < DEPTH_BUCKETS; bucket++) bucketStart[bucket + 1] += bucketStart[bucket];
+    for (let i = 0; i < n; i++) sorted[bucketStart[depthKey[i]]++] = i;
 
     const positions = this.positions;
     const colors = this.colors;
