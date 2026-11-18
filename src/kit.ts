@@ -103,6 +103,26 @@ const scratchScale = new Vector3();
 const scratchPosition = new Vector3();
 const scratchRotation = new Quaternion();
 const scratchMatrix = new Matrix();
+const scratchWorld = new Matrix();
+
+export function composeTransform(
+  out: Matrix,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  pitch: number,
+  roll: number,
+  sx: number,
+  sy: number,
+  sz: number,
+): Matrix {
+  scratchScale.set(sx, sy, sz);
+  scratchPosition.set(x, y, z);
+  Quaternion.RotationYawPitchRollToRef(yaw, pitch, roll, scratchRotation);
+  Matrix.ComposeToRef(scratchScale, scratchRotation, scratchPosition, out);
+  return out;
+}
 
 export function writeTransform(
   target: Float32Array | number[],
@@ -117,11 +137,7 @@ export function writeTransform(
   sy: number,
   sz: number,
 ): void {
-  scratchScale.set(sx, sy, sz);
-  scratchPosition.set(x, y, z);
-  Quaternion.RotationYawPitchRollToRef(yaw, pitch, roll, scratchRotation);
-  Matrix.ComposeToRef(scratchScale, scratchRotation, scratchPosition, scratchMatrix);
-  scratchMatrix.copyToArray(target as Float32Array, offset);
+  composeTransform(scratchMatrix, x, y, z, yaw, pitch, roll, sx, sy, sz).copyToArray(target as Float32Array, offset);
 }
 
 export class InstanceBatch {
@@ -150,6 +166,25 @@ export class InstanceBatch {
   push(x: number, y: number, z: number, yaw: number, pitch: number, roll: number, sx: number, sy: number, sz: number): void {
     if (this.count >= this.capacity) return;
     writeTransform(this.matrices, this.count * 16, x, y, z, yaw, pitch, roll, sx, sy, sz);
+    this.count++;
+  }
+
+  pushUnder(
+    parent: Matrix,
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    pitch: number,
+    roll: number,
+    sx: number,
+    sy: number,
+    sz: number,
+    world: Matrix = scratchWorld,
+  ): void {
+    composeTransform(scratchMatrix, x, y, z, yaw, pitch, roll, sx, sy, sz).multiplyToRef(parent, world);
+    if (this.count >= this.capacity) return;
+    world.copyToArray(this.matrices, this.count * 16);
     this.count++;
   }
 

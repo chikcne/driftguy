@@ -74,6 +74,8 @@ const CRATE_CLEARANCE = 2.5;
 const BLAST_CHAIN_DELAY = 0.09;
 const BOSS_BLAST_RADIUS = 11;
 const EMBER_GIB_POWER = 1.9;
+const RIDER_THROW_CARRY = 0.7;
+const RIDER_THROW_SIDE = 4;
 const HEARING_RANGE = 110;
 const PAN_RANGE = 45;
 const TRACK_SLIP_SPEED = 2.5;
@@ -402,11 +404,17 @@ class Game {
       smoke: this.smoke,
       damageScale: this.spawner.damageScale(this.time),
       onPlayerHit: (enemy, damage, closing) => this.hurtPlayer(enemy, damage, closing),
+      onWreck: (enemy) => this.onEnemyWrecked(enemy),
+      onBump: (enemy, strength) => this.onEnemyBumped(enemy, strength),
+      onScrape: (enemy) => this.gibs.sparks(enemy.x, groundHeight(enemy.x, enemy.z) + 0.2, enemy.z, 2, 7, enemy.vx, enemy.vz),
       onKill: (enemy) => this.onEnemyKilled(enemy),
     });
     this.world.step(dt, this.car.x, this.car.z);
     this.gun.update(dt, this.car, this.stats, this.enemies, this.audio);
-    this.enemies.sweepDead((enemy) => this.onEnemyKilled(enemy));
+    this.enemies.sweepDead(
+      (enemy) => this.onEnemyWrecked(enemy),
+      (enemy) => this.onEnemyKilled(enemy),
+    );
     this.updateBlasts(dt);
     this.gatherNitrous();
     this.updateCrates(dt);
@@ -660,6 +668,29 @@ class Game {
     this.input.rumble(0.9, 0.6, 220);
   }
 
+  private onEnemyWrecked(enemy: Enemy): void {
+    const loudness = this.loudnessAt(enemy.x, enemy.z);
+    this.audio.screech(enemy.wreck, saturate(enemy.spec.radius / 3.6), loudness, this.panAt(enemy.x));
+    if (enemy.spec.kind !== "bike") return;
+    const away = -enemy.wreckSide * RIDER_THROW_SIDE;
+    const fx = Math.sin(enemy.heading);
+    const fz = Math.cos(enemy.heading);
+    this.gibs.throwRider(
+      enemy.x,
+      enemy.z,
+      enemy.heading,
+      enemy.vx * RIDER_THROW_CARRY + fz * away + enemy.knockX,
+      randRange(5, 8),
+      enemy.vz * RIDER_THROW_CARRY - fx * away + enemy.knockZ,
+    );
+  }
+
+  private onEnemyBumped(enemy: Enemy, strength: number): void {
+    const y = groundHeight(enemy.x, enemy.z) + 0.8;
+    this.gibs.sparks(enemy.x, y, enemy.z, 3 + Math.round(strength * 4), 12, enemy.vx, enemy.vz);
+    this.audio.crunch(strength, this.loudnessAt(enemy.x, enemy.z), this.panAt(enemy.x));
+  }
+
   private onEnemyKilled(enemy: Enemy): void {
     this.kills++;
     const spec = enemy.spec;
@@ -734,7 +765,11 @@ class Game {
       this.detonate(blast.x, blast.z, blast.radius, blast.damage);
       detonated = true;
     }
-    if (detonated) this.enemies.sweepDead((enemy) => this.onEnemyKilled(enemy));
+    if (!detonated) return;
+    this.enemies.sweepDead(
+      (enemy) => this.onEnemyWrecked(enemy),
+      (enemy) => this.onEnemyKilled(enemy),
+    );
   }
 
   private detonate(x: number, z: number, radius: number, damage: number): void {

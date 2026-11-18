@@ -1,8 +1,8 @@
-import { Material, type Mesh, Scene, ShadowGenerator } from "@babylonjs/core";
-import { InstanceBatch } from "./kit";
+import { Material, Matrix, type Mesh, Scene, ShadowGenerator } from "@babylonjs/core";
+import { composeTransform, InstanceBatch } from "./kit";
 import type { Shove } from "./loose";
-import { clamp, moveToward, randRange, randSigned, TAU, wrapAngle } from "./math";
-import { buildEnemyModels, type EnemyKind } from "./models";
+import { clamp, damp, lerp, moveToward, randRange, randSigned, smoothstep, TAU, wrapAngle } from "./math";
+import { buildEnemyModels, buildRiderModels, type EnemyKind, RIDER_SEAT, RIDER_SHOULDER } from "./models";
 import { createSmokeSample, PUFF, type SmokeSystem } from "./smoke";
 import { sampleSlope, type Slope } from "./terrain";
 import type { Stats } from "./upgrades";
@@ -22,14 +22,17 @@ export interface EnemySpec {
   halfLength: number;
   halfWidth: number;
   mass: number;
+  sway: number;
+  wreckSeconds: number;
+  wreckSpin: number;
 }
 
 export const ENEMY_SPECS: Record<EnemyKind, EnemySpec> = {
-  bike: { kind: "bike", radius: 0.95, hp: 8, speed: 30, accel: 16, turn: 2.6, grip: 3.6, damage: 3, scrap: 1, halfLength: 0.9, halfWidth: 0.4, mass: 0.2 },
-  buggy: { kind: "buggy", radius: 1.55, hp: 26, speed: 26, accel: 12, turn: 1.9, grip: 2.6, damage: 7, scrap: 2, halfLength: 1.5, halfWidth: 0.95, mass: 0.6 },
-  truck: { kind: "truck", radius: 2.4, hp: 110, speed: 19, accel: 7, turn: 1.1, grip: 2.0, damage: 18, scrap: 7, halfLength: 2.8, halfWidth: 1.2, mass: 1.5 },
-  interceptor: { kind: "interceptor", radius: 1.7, hp: 60, speed: 35, accel: 15, turn: 1.7, grip: 2.2, damage: 14, scrap: 4, halfLength: 2.2, halfWidth: 1.0, mass: 0.9 },
-  rig: { kind: "rig", radius: 3.6, hp: 900, speed: 22, accel: 6, turn: 0.8, grip: 1.8, damage: 30, scrap: 45, halfLength: 5.4, halfWidth: 1.5, mass: 4 },
+  bike: { kind: "bike", radius: 0.95, hp: 8, speed: 30, accel: 16, turn: 2.6, grip: 3.6, damage: 3, scrap: 1, halfLength: 0.9, halfWidth: 0.4, mass: 0.2, sway: 1, wreckSeconds: 0.9, wreckSpin: 4.5 },
+  buggy: { kind: "buggy", radius: 1.55, hp: 26, speed: 26, accel: 12, turn: 1.9, grip: 2.6, damage: 7, scrap: 2, halfLength: 1.5, halfWidth: 0.95, mass: 0.6, sway: 0.85, wreckSeconds: 1.25, wreckSpin: 4.6 },
+  truck: { kind: "truck", radius: 2.4, hp: 110, speed: 19, accel: 7, turn: 1.1, grip: 2.0, damage: 18, scrap: 7, halfLength: 2.8, halfWidth: 1.2, mass: 1.5, sway: 0.5, wreckSeconds: 1.6, wreckSpin: 2.4 },
+  interceptor: { kind: "interceptor", radius: 1.7, hp: 60, speed: 35, accel: 15, turn: 1.7, grip: 2.2, damage: 14, scrap: 4, halfLength: 2.2, halfWidth: 1.0, mass: 0.9, sway: 0.75, wreckSeconds: 1.35, wreckSpin: 4 },
+  rig: { kind: "rig", radius: 3.6, hp: 900, speed: 22, accel: 6, turn: 0.8, grip: 1.8, damage: 30, scrap: 45, halfLength: 5.4, halfWidth: 1.5, mass: 4, sway: 0.25, wreckSeconds: 2, wreckSpin: 1.1 },
 };
 
 export interface Enemy {
@@ -52,6 +55,17 @@ export interface Enemy {
   flank: number;
   knockX: number;
   knockZ: number;
+  blind: number;
+  reel: number;
+  spin: number;
+  swayPhase: number;
+  swayRate: number;
+  bumpCooldown: number;
+  wreck: number;
+  wreckAge: number;
+  wreckSide: number;
+  tilt: number;
+  fxTimer: number;
 }
 
 export interface EnemyContext {
@@ -63,6 +77,9 @@ export interface EnemyContext {
   smoke: SmokeSystem;
   damageScale: number;
   onPlayerHit: (enemy: Enemy, damage: number, closingSpeed: number) => void;
+  onWreck: (enemy: Enemy) => void;
+  onBump: (enemy: Enemy, strength: number) => void;
+  onScrape: (enemy: Enemy) => void;
   onKill: (enemy: Enemy) => void;
 }
 
@@ -87,11 +104,54 @@ const FLANK_DISTANCE = 16;
 const STIR_RATE = 1.6;
 const BLAST_KNOCK = 11;
 const KNOCK_FADE = 5;
+const BLIND_RISE = 4;
+const BLIND_FADE = 1.3;
+const REEL_FADE = 1.1;
+const REEL_STEER_LOSS = 0.85;
+const SPIN_FADE = 2.5;
+const SWAY_RATE_MIN = 5;
+const SWAY_RATE_MAX = 7.5;
+const SWAY_ANGLE = 0.6;
+const SWAY_KICK = 16;
+const SWAY_GRIP_LOSS = 0.82;
+const SWAY_FISHTAIL = 0.17;
+const BIKE_SWAY_ROLL = 0.3;
+const CAR_SWAY_ROLL = 0.11;
+const RIDER_WIGGLE_ROLL = 0.3;
+const RIDER_WIGGLE_YAW = 0.38;
+const RIDER_RECOIL = -0.24;
+const ARM_GRIP = { yaw: 0.1, pitch: 0.48, length: 1.12 };
+const ARM_COVER = { yaw: -0.86, pitch: -0.5, length: 0.75 };
+const ARM_RUB = 0.09;
+const WRECK_SECONDS_SPREAD = 0.25;
+const WRECK_SPIN_UP = 6;
+const WRECK_VEER = 1.1;
+const WRECK_VEER_FADE = 1.6;
+const WRECK_ROLL_DRAG = 0.45;
+const WRECK_SLIDE_DRAG = 1.2;
+const WRECK_TILT_PER_SLIP = 0.035;
+const WRECK_TILT_MAX = 0.42;
+const WRECK_CRASH_SPEED = 7;
+const WRECK_FX_INTERVAL = 0.05;
+const WRECK_FUSE = 0.35;
+const BIKE_LAY_ANGLE = 1.38;
+const BIKE_LAY_RATE = 8;
+const BIKE_SPIN_FADE = 3.2;
+const BIKE_SLIDE_DRAG = 1.5;
+const BUMP_COOLDOWN = 0.5;
+const BUMP_DAMAGE = 0.3;
+const BUMP_SHOVE = 5;
+const BUMP_SPIN = 5;
 
 export class EnemySystem {
   readonly active: Enemy[] = [];
+  readonly wrecks: Enemy[] = [];
   readonly meshes: Mesh[];
   private readonly batches: Record<EnemyKind, InstanceBatch>;
+  private readonly riders: InstanceBatch;
+  private readonly arms: InstanceBatch;
+  private readonly mount = new Matrix();
+  private readonly seat = new Matrix();
   private readonly sample = createSmokeSample();
   private harmDealt = 0;
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
@@ -109,11 +169,20 @@ export class EnemySystem {
       batches[kind] = new InstanceBatch(mesh, MAX_ENEMIES);
     }
     this.batches = batches;
-    this.meshes = Object.values(models);
+    const rider = buildRiderModels(scene);
+    for (const mesh of [rider.body, rider.arm]) {
+      mesh.material = material;
+      mesh.receiveShadows = true;
+      shadows.addShadowCaster(mesh);
+    }
+    this.riders = new InstanceBatch(rider.body, MAX_ENEMIES);
+    this.arms = new InstanceBatch(rider.arm, MAX_ENEMIES * 2);
+    this.meshes = [...Object.values(models), rider.body, rider.arm];
   }
 
   clear(): void {
     this.active.length = 0;
+    this.wrecks.length = 0;
     this.harmDealt = 0;
   }
 
@@ -153,6 +222,17 @@ export class EnemySystem {
       flank: randSigned(1),
       knockX: 0,
       knockZ: 0,
+      blind: 0,
+      reel: 0,
+      spin: 0,
+      swayPhase: Math.random() * TAU,
+      swayRate: randRange(SWAY_RATE_MIN, SWAY_RATE_MAX),
+      bumpCooldown: 0,
+      wreck: 0,
+      wreckAge: 0,
+      wreckSide: 1,
+      tilt: 0,
+      fxTimer: 0,
     };
     this.active.push(enemy);
     return enemy;
@@ -174,20 +254,37 @@ export class EnemySystem {
     }
   }
 
-  sweepDead(onKill: (enemy: Enemy) => void): void {
+  sweepDead(onWreck: (enemy: Enemy) => void, onKill: (enemy: Enemy) => void): void {
     for (let i = this.active.length - 1; i >= 0; i--) {
       const enemy = this.active[i];
       if (enemy.hp > 0) continue;
       this.active[i] = this.active[this.active.length - 1];
       this.active.pop();
-      onKill(enemy);
+      if (enemy.blindTimer <= 0) {
+        onKill(enemy);
+        continue;
+      }
+      this.beginWreck(enemy);
+      this.wrecks.push(enemy);
+      onWreck(enemy);
     }
+  }
+
+  private beginWreck(enemy: Enemy): void {
+    const spec = enemy.spec;
+    const swing = enemy.spin + Math.sin(enemy.swayPhase) * Math.max(enemy.blind, enemy.reel);
+    enemy.wreckSide = Math.abs(swing) > 0.2 ? Math.sign(swing) : Math.random() < 0.5 ? -1 : 1;
+    enemy.wreck = spec.wreckSeconds * (1 + randSigned(WRECK_SECONDS_SPREAD));
+    enemy.wreckAge = 0;
+    enemy.fxTimer = 0;
+    enemy.flinch = 1;
   }
 
   update(ctx: EnemyContext): void {
     const { dt, car, stats, smoke } = ctx;
     const stir = Math.min(1, STIR_RATE * dt);
     const knockFade = Math.exp(-KNOCK_FADE * dt);
+    const spinFade = Math.exp(-SPIN_FADE * dt);
     for (const enemy of this.active) {
       const spec = enemy.spec;
       enemy.knockX *= knockFade;
@@ -199,6 +296,11 @@ export class EnemySystem {
       enemy.emberTimer -= dt;
       enemy.toxicTimer -= dt;
       enemy.flinch = Math.max(0, enemy.flinch - dt * 4);
+      enemy.bumpCooldown -= dt;
+      enemy.reel = Math.max(0, enemy.reel - REEL_FADE * dt);
+      enemy.spin *= spinFade;
+      enemy.heading += enemy.spin * dt;
+      enemy.swayPhase += enemy.swayRate * dt;
 
       const cloud = smoke.sample(enemy.x, enemy.z, this.sample, enemy.vx, enemy.vz, stir);
       if (cloud.total > SMOKE_THRESHOLD) {
@@ -212,6 +314,7 @@ export class EnemySystem {
         if (cloud.byKind[PUFF.toxic] > share) enemy.toxicTimer = TOXIC_LINGER;
       }
       if (enemy.toxicTimer > 0) this.hurt(enemy, stats.toxicDps * dt);
+      enemy.blind = enemy.blindTimer > 0 ? Math.min(1, enemy.blind + BLIND_RISE * dt) : Math.max(0, enemy.blind - BLIND_FADE * dt);
 
       this.steer(enemy, ctx);
       enemy.x += enemy.vx * dt;
@@ -240,29 +343,186 @@ export class EnemySystem {
       }
     }
     this.separate();
-    this.sweepDead(ctx.onKill);
+    this.sweepDead(ctx.onWreck, ctx.onKill);
+    this.updateWrecks(ctx);
+  }
+
+  private updateWrecks(ctx: EnemyContext): void {
+    const { dt, car, smoke } = ctx;
+    for (let i = this.wrecks.length - 1; i >= 0; i--) {
+      const enemy = this.wrecks[i];
+      const spec = enemy.spec;
+      const bike = spec.kind === "bike";
+      enemy.wreck -= dt;
+      enemy.wreckAge += dt;
+      enemy.hitCooldown -= dt;
+      enemy.flinch = Math.max(0, enemy.flinch - dt * 4, 1 - enemy.wreck / WRECK_FUSE);
+
+      const spinTarget = enemy.wreckSide * spec.wreckSpin * (bike ? Math.exp(-BIKE_SPIN_FADE * enemy.wreckAge) : 1);
+      enemy.spin = damp(enemy.spin, spinTarget, WRECK_SPIN_UP, dt);
+      enemy.heading += enemy.spin * dt;
+
+      const veer = enemy.wreckSide * WRECK_VEER * Math.exp(-WRECK_VEER_FADE * enemy.wreckAge) * dt;
+      const cos = Math.cos(veer);
+      const sin = Math.sin(veer);
+      const vx = enemy.vx * cos + enemy.vz * sin;
+      const vz = enemy.vz * cos - enemy.vx * sin;
+      const fx = Math.sin(enemy.heading);
+      const fz = Math.cos(enemy.heading);
+      const forward = (vx * fx + vz * fz) * Math.exp(-(bike ? BIKE_SLIDE_DRAG : WRECK_ROLL_DRAG) * dt);
+      const slip = (vx * fz - vz * fx) * Math.exp(-(bike ? BIKE_SLIDE_DRAG : WRECK_SLIDE_DRAG) * dt);
+      enemy.vx = fx * forward + fz * slip;
+      enemy.vz = fz * forward - fx * slip;
+      enemy.x += enemy.vx * dt;
+      enemy.z += enemy.vz * dt;
+      enemy.tilt = bike
+        ? damp(enemy.tilt, enemy.wreckSide * BIKE_LAY_ANGLE, BIKE_LAY_RATE, dt)
+        : damp(enemy.tilt, clamp(-slip * WRECK_TILT_PER_SLIP, -WRECK_TILT_MAX, WRECK_TILT_MAX), 9, dt);
+
+      if (ctx.world.resolve(enemy, spec.radius, this.contact).hit) {
+        const into = enemy.vx * this.contact.nx + enemy.vz * this.contact.nz;
+        if (into < 0) {
+          enemy.vx -= into * this.contact.nx * 1.2;
+          enemy.vz -= into * this.contact.nz * 1.2;
+          if (into < -WRECK_CRASH_SPEED) enemy.wreck = 0;
+        }
+      }
+      ctx.world.shove(enemy, spec.radius, spec.mass, this.shove);
+      this.collideWithCar(enemy, ctx, true);
+      this.bumpInto(enemy, ctx);
+
+      enemy.fxTimer -= dt;
+      if (enemy.fxTimer <= 0) {
+        enemy.fxTimer = WRECK_FX_INTERVAL;
+        if (Math.abs(enemy.x - car.x) < DUST_VISIBLE_RANGE && Math.abs(enemy.z - car.z) < DUST_VISIBLE_RANGE) {
+          const speed = Math.hypot(enemy.vx, enemy.vz);
+          const x = enemy.x + randSigned(spec.halfLength) * fx + randSigned(spec.halfWidth) * fz;
+          const z = enemy.z + randSigned(spec.halfLength) * fz - randSigned(spec.halfWidth) * fx;
+          const ground = this.groundAt(x, z);
+          if (speed > 4) smoke.emit(PUFF.dust, x, ground + 0.3, z, enemy.vx * 0.15, 1, enemy.vz * 0.15, 0.5 + spec.radius * 0.3, 1.1, randRange(0.9, 1.5), 0.5, 0.2);
+          const cooked = enemy.wreckAge / (enemy.wreckAge + Math.max(0, enemy.wreck));
+          if (Math.random() < cooked) {
+            const burning = enemy.wreck < WRECK_FUSE || Math.random() < cooked * 0.3;
+            smoke.emit(burning ? PUFF.fire : PUFF.soot, enemy.x, ground + 0.6 + spec.radius * 0.3, enemy.z, enemy.vx * 0.3, randRange(1.5, 3.5), enemy.vz * 0.3, 0.3 + spec.radius * 0.18, 1.2, burning ? randRange(0.25, 0.45) : randRange(0.6, 1), 0.8, burning ? 1.5 : 0.8);
+          }
+          if (bike && speed > 3) ctx.onScrape(enemy);
+        }
+      }
+
+      if (enemy.wreck > 0) continue;
+      this.wrecks[i] = this.wrecks[this.wrecks.length - 1];
+      this.wrecks.pop();
+      ctx.onKill(enemy);
+    }
+  }
+
+  private bumpInto(wreck: Enemy, ctx: EnemyContext): void {
+    for (const other of this.active) {
+      const reach = (wreck.spec.radius + other.spec.radius) * 0.9;
+      const dx = other.x - wreck.x;
+      if (dx > reach || dx < -reach) continue;
+      const dz = other.z - wreck.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq >= reach * reach) continue;
+      const dist = Math.sqrt(distSq) || 0.001;
+      const nx = dx / dist;
+      const nz = dz / dist;
+      const share = wreck.spec.mass / (wreck.spec.mass + other.spec.mass);
+      const overlap = reach - dist;
+      other.x += nx * overlap * share;
+      other.z += nz * overlap * share;
+      wreck.x -= nx * overlap * (1 - share);
+      wreck.z -= nz * overlap * (1 - share);
+      if (other.bumpCooldown > 0) continue;
+      other.bumpCooldown = BUMP_COOLDOWN;
+      const closing = Math.max(0, (wreck.vx - other.vx) * nx + (wreck.vz - other.vz) * nz);
+      const strength = Math.min(1, share * 2);
+      const kick = (BUMP_SHOVE + closing) * strength;
+      other.vx += nx * kick;
+      other.vz += nz * kick;
+      wreck.vx -= nx * closing * (1 - share);
+      wreck.vz -= nz * closing * (1 - share);
+      const side = Math.sign(nx * Math.cos(other.heading) - nz * Math.sin(other.heading)) || 1;
+      other.spin = clamp(other.spin + side * BUMP_SPIN * strength, -BUMP_SPIN, BUMP_SPIN);
+      other.reel = Math.max(other.reel, strength);
+      other.flinch = 1;
+      this.hurt(other, wreck.spec.damage * BUMP_DAMAGE);
+      ctx.onBump(other, strength);
+    }
   }
 
   render(time: number): void {
     for (const batch of Object.values(this.batches)) batch.begin();
-    for (const enemy of this.active) {
-      const spec = enemy.spec;
-      const slope = sampleSlope(enemy.x, enemy.z, enemy.heading, spec.halfLength, spec.halfWidth, this.slope);
-      const shake = enemy.flinch * 0.07 * Math.sin(time * 55 + enemy.flank * 9);
-      const lean = clamp((enemy.vx * Math.cos(enemy.heading) - enemy.vz * Math.sin(enemy.heading)) * 0.02, -0.3, 0.3);
-      this.batches[spec.kind].push(
-        enemy.x,
-        slope.height,
-        enemy.z,
-        enemy.heading,
-        slope.pitch,
-        slope.roll + lean + shake,
-        1 + shake,
-        1 - shake,
-        1 + shake,
+    this.riders.begin();
+    this.arms.begin();
+    for (const enemy of this.active) this.draw(enemy, time);
+    for (const enemy of this.wrecks) this.drawWreck(enemy, time);
+    for (const batch of Object.values(this.batches)) batch.commit();
+    this.riders.commit();
+    this.arms.commit();
+  }
+
+  private draw(enemy: Enemy, time: number): void {
+    const spec = enemy.spec;
+    const bike = spec.kind === "bike";
+    const loose = Math.max(enemy.blind, enemy.reel) * spec.sway;
+    const yaw = enemy.heading + Math.sin(enemy.swayPhase + 1.3) * SWAY_FISHTAIL * loose;
+    const slope = sampleSlope(enemy.x, enemy.z, yaw, spec.halfLength, spec.halfWidth, this.slope);
+    const shake = enemy.flinch * 0.07 * Math.sin(time * 55 + enemy.flank * 9);
+    const lean = clamp((enemy.vx * Math.cos(enemy.heading) - enemy.vz * Math.sin(enemy.heading)) * 0.02, -0.3, 0.3);
+    const sway = Math.sin(enemy.swayPhase) * (bike ? BIKE_SWAY_ROLL : CAR_SWAY_ROLL) * loose;
+    const roll = slope.roll + lean + sway + shake;
+    this.batches[spec.kind].push(enemy.x, slope.height, enemy.z, yaw, slope.pitch, roll, 1 + shake, 1 - shake, 1 + shake);
+    if (!bike) return;
+
+    const blind = smoothstep(0, 1, enemy.blind);
+    const wiggle = time * 11 + enemy.flank * 9;
+    composeTransform(this.mount, enemy.x, slope.height, enemy.z, yaw, slope.pitch, roll, 1, 1, 1);
+    this.riders.pushUnder(
+      this.mount,
+      RIDER_SEAT[0],
+      RIDER_SEAT[1],
+      RIDER_SEAT[2],
+      Math.sin(wiggle * 0.73) * RIDER_WIGGLE_YAW * blind,
+      RIDER_RECOIL * blind,
+      Math.sin(wiggle) * RIDER_WIGGLE_ROLL * blind,
+      1,
+      1,
+      1,
+      this.seat,
+    );
+    for (const side of [-1, 1]) {
+      this.arms.pushUnder(
+        this.seat,
+        side * RIDER_SHOULDER[0],
+        RIDER_SHOULDER[1],
+        RIDER_SHOULDER[2],
+        side * lerp(ARM_GRIP.yaw, ARM_COVER.yaw, blind),
+        lerp(ARM_GRIP.pitch, ARM_COVER.pitch, blind) + (Math.sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind,
+        0,
+        1,
+        1,
+        lerp(ARM_GRIP.length, ARM_COVER.length, blind),
       );
     }
-    for (const batch of Object.values(this.batches)) batch.commit();
+  }
+
+  private drawWreck(enemy: Enemy, time: number): void {
+    const spec = enemy.spec;
+    const slope = sampleSlope(enemy.x, enemy.z, enemy.heading, spec.halfLength, spec.halfWidth, this.slope);
+    const shake = enemy.flinch * 0.07 * Math.sin(time * 55 + enemy.flank * 9);
+    const lift = spec.halfWidth * Math.abs(Math.sin(enemy.tilt));
+    this.batches[spec.kind].push(
+      enemy.x,
+      slope.height + lift,
+      enemy.z,
+      enemy.heading,
+      slope.pitch,
+      slope.roll + enemy.tilt + shake,
+      1 + shake,
+      1 - shake,
+      1 + shake,
+    );
   }
 
   private groundAt(x: number, z: number): number {
@@ -283,9 +543,11 @@ export class EnemySystem {
       targetX += (toCarZ / distance) * sideways;
       targetZ -= (toCarX / distance) * sideways;
     }
-    const desired = Math.atan2(targetX - enemy.x, targetZ - enemy.z);
+    const loose = Math.max(enemy.blind, enemy.reel) * spec.sway;
+    const desired = Math.atan2(targetX - enemy.x, targetZ - enemy.z) + Math.sin(enemy.swayPhase) * SWAY_ANGLE * loose;
     const error = wrapAngle(desired - enemy.heading);
-    enemy.heading += clamp(error, -spec.turn * dt, spec.turn * dt);
+    const turn = spec.turn * dt * (1 - REEL_STEER_LOSS * enemy.reel);
+    enemy.heading += clamp(error, -turn, turn);
 
     const fx = Math.sin(enemy.heading);
     const fz = Math.cos(enemy.heading);
@@ -294,12 +556,13 @@ export class EnemySystem {
     if (enemy.slowTimer > 0) cap *= 1 - stats.ashSlow;
     if (Math.abs(error) > 1.2) cap *= 0.65;
     const forward = moveToward(enemy.vx * fx + enemy.vz * fz, cap, spec.accel * dt);
-    const sideSlip = (enemy.vx * fz - enemy.vz * fx) * Math.exp(-spec.grip * dt);
+    const grip = spec.grip * (1 - SWAY_GRIP_LOSS * loose);
+    const sideSlip = (enemy.vx * fz - enemy.vz * fx + Math.cos(enemy.swayPhase) * SWAY_KICK * loose * dt) * Math.exp(-grip * dt);
     enemy.vx = fx * forward + fz * sideSlip;
     enemy.vz = fz * forward - fx * sideSlip;
   }
 
-  private collideWithCar(enemy: Enemy, ctx: EnemyContext): void {
+  private collideWithCar(enemy: Enemy, ctx: EnemyContext, wrecked = false): void {
     const { car, stats } = ctx;
     const spec = enemy.spec;
     const fx = Math.sin(car.heading);
@@ -330,6 +593,7 @@ export class EnemySystem {
     car.vx -= nx * shove;
     car.vz -= nz * shove;
     car.yawRate += (nx * fz - nz * fx) * shove * 0.08;
+    if (wrecked) return;
 
     if (stats.ramDamage > 0 && car.speed > RAM_MIN_SPEED && enemy.ramCooldown <= 0) {
       enemy.ramCooldown = RAM_COOLDOWN;

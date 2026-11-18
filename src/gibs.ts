@@ -32,8 +32,6 @@ const RECIPES: Record<EnemyKind, Part[]> = {
     box([0.26, 0.34, 0.7], [0, 0.62, -0.4], P.raiderRed),
     box([0.34, 0.24, 0.5], [0, 0.82, 0.2], P.raiderBlack),
     box([0.8, 0.07, 0.07], [0, 1.02, 0.62], P.metalDark),
-    box([0.46, 0.32, 0.62], [0, 1.2, -0.2], P.raiderBlack),
-    skull(0.4, [0, 1.62, 0]),
     box([0.06, 0.06, 1.5], [0, 1.5, -0.85], P.metalDark),
     box([0.6, 0.04, 0.34], [0, 2.05, -1.15], P.raiderRed),
   ],
@@ -121,7 +119,10 @@ const RECIPES: Record<EnemyKind, Part[]> = {
   ],
 };
 
-const SHAPES: GibShape[] = ["box", "wheel", "pipe", "spike", "skull", "spark"];
+const SHAPES: GibShape[] = ["box", "wheel", "pipe", "spike", "skull", "spark", "rider"];
+const BAKED_SHAPES: GibShape[] = ["wheel", "spark", "rider"];
+const RIDER_HEIGHT = 1.1;
+const RIDER_THICKNESS = 0.34;
 const MAX_GIBS = 768;
 const GRAVITY = 30;
 const AIR_DRAG = 0.25;
@@ -216,7 +217,7 @@ export class GibSystem {
         mesh.receiveShadows = true;
         shadows.addShadowCaster(mesh);
       }
-      batches[shape] = new InstanceBatch(mesh, MAX_GIBS, shape !== "wheel" && shape !== "spark");
+      batches[shape] = new InstanceBatch(mesh, MAX_GIBS, !BAKED_SHAPES.includes(shape));
     }
     this.batches = batches;
     for (let i = 0; i < MAX_GIBS; i++) {
@@ -303,6 +304,32 @@ export class GibSystem {
       gib.trail = Math.random() < trailChance ? (spec.burning && Math.random() < 0.6 ? TRAIL_FIRE : TRAIL_SOOT) : TRAIL_NONE;
       gib.trailTimer = Math.random() * TRAIL_INTERVAL;
     }
+  }
+
+  throwRider(x: number, z: number, heading: number, vx: number, vy: number, vz: number): void {
+    const gib = this.take();
+    gib.shape = "rider";
+    gib.mode = AIR;
+    gib.x = x;
+    gib.y = groundHeight(x, z) + RIDER_HEIGHT;
+    gib.z = z;
+    gib.vx = vx;
+    gib.vy = vy;
+    gib.vz = vz;
+    gib.yaw = heading;
+    gib.pitch = -HALF_TURN / 2;
+    gib.roll = 0;
+    gib.spinYaw = randSigned(4);
+    gib.spinPitch = randRange(5, 9) * (Math.random() < 0.7 ? -1 : 1);
+    gib.spinRoll = randSigned(5);
+    gib.sx = 1;
+    gib.sy = 1;
+    gib.sz = 1;
+    gib.clearance = 0.45;
+    gib.restClearance = RIDER_THICKNESS / 2;
+    gib.age = 0;
+    gib.life = randRange(4.5, 6.5);
+    gib.trail = TRAIL_NONE;
   }
 
   sparks(x: number, y: number, z: number, count: number, speed: number, vx: number, vz: number): void {

@@ -4,6 +4,8 @@ const MASTER_VOLUME = 0.45;
 const GEAR_COUNT = 4;
 const POP_GAP = 0.045;
 const BLAST_GAP = 0.07;
+const SCREECH_GAP = 0.12;
+const CRUNCH_GAP = 0.06;
 const CRUNCH_CURVE = new Float32Array(257);
 for (let i = 0; i < CRUNCH_CURVE.length; i++) CRUNCH_CURVE[i] = Math.tanh((i / 128 - 1) * 3);
 
@@ -23,6 +25,8 @@ export class GameAudio {
   private muted = false;
   private lastShot = 0;
   private lastPop = -1;
+  private lastScreech = -1;
+  private lastCrunch = -1;
   private lastBlast = -1;
 
   unlock(): void {
@@ -131,6 +135,46 @@ export class GameAudio {
     this.drop(out, now, lerp(210, 120, size) * tune, 42, 0.16 + size * 0.16, (0.5 + size * 0.35) * loudness);
     this.sweep(out, now, lerp(3000, 1800, size) * tune, 240, 0.2 + size * 0.28, (0.34 + size * 0.2) * loudness, false);
     this.clatter(out, now + 0.1, 2 + Math.round(size * 2), 0.32, 0.09 * loudness);
+  }
+
+  screech(seconds: number, size: number, loudness: number, pan: number): void {
+    const context = this.context;
+    if (!context || !this.noise || loudness <= 0.03) return;
+    const now = context.currentTime;
+    if (now - this.lastScreech < SCREECH_GAP) return;
+    this.lastScreech = now;
+    const out = this.panned(pan);
+    if (!out) return;
+    const length = Math.max(0.3, seconds);
+    const pitch = lerp(1500, 800, size) * (0.9 + Math.random() * 0.2);
+    const source = context.createBufferSource();
+    source.buffer = this.noise;
+    source.loop = true;
+    const filter = context.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.Q.value = 7;
+    filter.frequency.setValueAtTime(pitch, now);
+    filter.frequency.exponentialRampToValueAtTime(pitch * 0.62, now + length);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.exponentialRampToValueAtTime(0.5 * loudness, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + length);
+    source.connect(filter).connect(gain).connect(out);
+    source.start(now, Math.random());
+    source.stop(now + length + 0.02);
+  }
+
+  crunch(strength: number, loudness: number, pan: number): void {
+    const context = this.context;
+    if (!context || loudness <= 0.03) return;
+    const now = context.currentTime;
+    if (now - this.lastCrunch < CRUNCH_GAP) return;
+    this.lastCrunch = now;
+    const out = this.panned(pan);
+    if (!out) return;
+    this.drop(out, now, 170, 60, 0.12, (0.3 + strength * 0.3) * loudness);
+    this.sweep(out, now, 2400, 400, 0.14, (0.25 + strength * 0.2) * loudness, true);
+    this.clatter(out, now + 0.03, 2, 0.12, 0.07 * loudness);
   }
 
   explosion(power: number, loudness: number, pan: number): void {

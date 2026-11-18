@@ -137,6 +137,31 @@ function spike(kit: ModelKit, position: Triple, length: number): void {
   kit.cylinder({ top: 0, bottom: 0.16, height: length, sides: 5 }, position, P.raiderBone, [HALF_PI, 0, 0]);
 }
 
+export interface RiderModels {
+  body: Mesh;
+  arm: Mesh;
+}
+
+export const RIDER_SEAT: Triple = [0, 0.9, -0.27];
+export const RIDER_SHOULDER: Triple = [0.29, 0.5, 0.17];
+
+export function buildRiderModels(scene: Scene): RiderModels {
+  const kit = new ModelKit(scene);
+  const body = kit
+    .box([0.46, 0.62, 0.32], [0, 0.3, 0.07], P.raiderBlack, [0.3, 0, 0])
+    .blob({ radius: 0.2, roughness: 0.05 }, [0, 0.72, 0.25], P.raiderBone)
+    .box([0.15, 0.2, 0.5], [0.25, -0.04, 0.2], P.rustDark)
+    .box([0.15, 0.2, 0.5], [-0.25, -0.04, 0.2], P.rustDark)
+    .box([0.13, 0.42, 0.14], [0.25, -0.3, 0.38], P.rustDark)
+    .box([0.13, 0.42, 0.14], [-0.25, -0.3, 0.38], P.rustDark)
+    .build("rider");
+  const arm = kit
+    .box([0.12, 0.12, 0.66], [0, 0, 0.33], P.raiderBlack)
+    .box([0.16, 0.16, 0.16], [0, 0, 0.72], P.raiderBone)
+    .build("riderArm");
+  return { body, arm };
+}
+
 export function buildEnemyModels(scene: Scene): Record<EnemyKind, Mesh> {
   const kit = new ModelKit(scene);
 
@@ -147,8 +172,6 @@ export function buildEnemyModels(scene: Scene): Record<EnemyKind, Mesh> {
     .box([0.34, 0.24, 0.5], [0, 0.82, 0.2], P.raiderBlack)
     .box([0.8, 0.07, 0.07], [0, 1.02, 0.62], P.metalDark)
     .box([0.1, 0.5, 0.1], [0, 0.78, 0.74], P.metalDark, [0.4, 0, 0])
-    .box([0.46, 0.62, 0.32], [0, 1.2, -0.2], P.raiderBlack, [0.3, 0, 0])
-    .blob({ radius: 0.2, roughness: 0.05 }, [0, 1.62, 0.0], P.raiderBone)
     .box([0.06, 1.5, 0.06], [0, 1.5, -0.85], P.metalDark)
     .box([0.04, 0.34, 0.6], [0, 2.05, -1.15], P.raiderRed);
   const bike = kit.build("bike");
@@ -250,7 +273,7 @@ export function buildBulletModel(scene: Scene): Mesh {
   return new ModelKit(scene).box([0.14, 0.14, 1.4], [0, 0, 0], P.headlight).build("bullet");
 }
 
-export type GibShape = "box" | "wheel" | "pipe" | "spike" | "skull" | "spark";
+export type GibShape = "box" | "wheel" | "pipe" | "spike" | "skull" | "spark" | "rider";
 
 export function buildGibModels(scene: Scene): Record<GibShape, Mesh> {
   const kit = new ModelKit(scene);
@@ -266,5 +289,13 @@ export function buildGibModels(scene: Scene): Record<GibShape, Mesh> {
     spike: kit.cylinder({ top: 0, bottom: 1, height: 1, sides: 5 }, [0, 0, 0], white, lengthwise).build("gibSpike"),
     skull: kit.blob({ radius: 0.5, roughness: 0.05 }, [0, 0, 0], white).build("gibSkull"),
     spark: kit.box([1, 1, 1], [0, 0, 0], white).build("gibSpark"),
+    rider: kit
+      .box([0.46, 0.3, 0.62], [0, 0, 0.1], P.raiderBlack)
+      .blob({ radius: 0.2, roughness: 0.05 }, [0, 0.02, 0.6], P.raiderBone)
+      .box([0.12, 0.12, 0.7], [0.42, -0.04, 0.42], P.raiderBlack, [0, 0.5, 0])
+      .box([0.12, 0.12, 0.7], [-0.4, -0.04, 0.1], P.raiderBlack, [0, 1.2, 0])
+      .box([0.15, 0.16, 0.8], [0.2, -0.04, -0.6], P.rustDark, [0, 0.22, 0])
+      .box([0.15, 0.16, 0.8], [-0.2, -0.04, -0.6], P.rustDark, [0, -0.3, 0])
+      .build("gibRider"),
   };
 }
