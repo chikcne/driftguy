@@ -1,4 +1,4 @@
-import { Camera, Color3, Constants, Effect, Mesh, MeshBuilder, RawTexture3D, Scene, ShaderMaterial, Texture, Vector2, Vector3, Vector4 } from "@babylonjs/core";
+import { Camera, Color3, Constants, Effect, Mesh, MeshBuilder, RawTexture3D, Scene, ShaderMaterial, Texture, Vector2, Vector3 } from "@babylonjs/core";
 
 export interface PuffField {
   count: number;
@@ -62,17 +62,20 @@ const SIZE_Z = CZ * CELL;
 const GROUND_DEPTH = 5;
 const FORWARD_BIAS = 8;
 const SQUASH_RADIUS = 4.5;
-const COLUMN_CENTER = 0.42;
-const COLUMN_SPREAD = 0.56;
+const COLUMN_CENTER = 0.25;
+const COLUMN_SPREAD = 0.68;
 const COLUMN_ASPECT = 2.2;
-const KERNEL_REACH = 1.15;
+const KERNEL_REACH = 1.3;
 const MIN_KERNEL_CELLS = 1.3;
+const MIN_REACH = 1.2;
+const MIN_RISE = 1.1;
 const TINT_REACH = 1.3;
 const MIN_TINT_CELLS = 1.2;
 const EXTINCTION = 2.6;
-const DENSITY_RANGE = 6;
-const DENSITY_TO_BYTE = 255 / DENSITY_RANGE;
+const DENSITY_RANGE = 16;
+const ROOT_DENSITY_TO_BYTE = 255 / Math.sqrt(DENSITY_RANGE);
 const SHADOW_DENSITY = 0.55;
+const SHADOW_FLOOR = 0.4;
 const SHADOW_DROP_LAYERS = 5;
 const LIGHT_STEPS = 256;
 const LIGHT_SCALE = 24;
@@ -81,31 +84,53 @@ for (let i = 0; i < LIGHT_STEPS; i++) {
   const depth = i / LIGHT_SCALE;
   LIGHT_TABLE[i] = Math.round(255 * (0.72 * Math.exp(-depth) + 0.28 * Math.exp(-0.22 * depth)));
 }
-const STEP_LENGTH = 0.42;
-const EROSION = 0.6;
-const RELIEF = 3.6;
-const GROUND_SHADOW = 0.55;
+const MARCH_STEPS = 128;
+const STEP_LENGTH = 0.28;
+const LEVEL_BULGE = 0.12;
+const LEVEL_HOLLOW = 8;
+const LIT_LEVEL = 0.9;
+const LIT_LIFT = 0.09;
+const MID_LUMPS = 0.8;
+const SMALL_LUMPS = 0.5;
+const YOUNG_LARGE = 0.85;
+const YOUNG_SMALL = 0.6;
+const DETAIL_SCALE = 3.3;
+const NORMAL_REACH = 0.2;
+const TERMINATOR = 0.5;
+const BAND_EDGE = 0.025;
+const SHADOW_STEPS = 24;
+const SHADOW_START = 0.3;
+const SHADOW_STEP = 0.3;
+const SHADOW_GROWTH = 1.07;
+const SHADOW_EDGE = 0.06;
+const CREASE_REACH = 0.35;
+const CREASE_WIDTH = 0.08;
+const CREASE_SHADE = 0.09;
+const HEAT_LOW = 0.08;
+const HEAT_HIGH = 0.5;
+const HEAT_GLOW = 0.3;
+const SUN_FLATTEN = 0.75;
+const RIM_START = 0.55;
+const RIM_STRENGTH = 0.4;
+const GROUND_SHADOW = 0.34;
+const GROUND_SHADOW_LEVEL = 0.3;
 const PUFFS_PER_REBUILD_STEP = 700;
-const NOISE_SIZE = 64;
-const NOISE_PERIOD = 14;
+const NOISE_SIZE = 96;
+const NOISE_CELLS = [6, 12];
+const NOISE_PERIOD = 32;
 const NOISE_RISE = 0.35;
 
 export function puffHeight(radius: number): number {
   return radius / (1 + radius / SQUASH_RADIUS);
 }
 
-function buildBillowNoise(): Uint8Array {
+function buildLumpNoise(): Uint8Array {
   const size = NOISE_SIZE;
-  const octaves = [
-    { cells: 3, weight: 0.5 },
-    { cells: 6, weight: 0.32 },
-    { cells: 12, weight: 0.18 },
-  ];
-  const values = new Float32Array(size * size * size);
-  for (let octave = 0; octave < octaves.length; octave++) {
-    const { cells, weight } = octaves[octave];
+  const bytes = new Uint8Array(size * size * size * 2);
+  for (let channel = 0; channel < NOISE_CELLS.length; channel++) {
+    const cells = NOISE_CELLS[channel];
     const points = new Float32Array(cells * cells * cells * 3);
-    let state = 0x9e3779b9 ^ (octave * 0x85ebca6b);
+    let state = 0x9e3779b9 ^ (channel * 0x85ebca6b);
     for (let i = 0; i < points.length; i++) {
       state = (state + 0x6d2b79f5) | 0;
       let t = Math.imul(state ^ (state >>> 15), 1 | state);
@@ -138,20 +163,11 @@ function buildBillowNoise(): Uint8Array {
               }
             }
           }
-          const closeness = 1 - Math.min(1, Math.sqrt(nearest));
-          values[x + size * (y + size * z)] += closeness * weight;
+          bytes[(x + size * (y + size * z)) * 2 + channel] = Math.round(255 * (1 - Math.min(1, Math.sqrt(nearest))));
         }
       }
     }
   }
-  let low = Infinity;
-  let high = -Infinity;
-  for (let i = 0; i < values.length; i++) {
-    if (values[i] < low) low = values[i];
-    if (values[i] > high) high = values[i];
-  }
-  const bytes = new Uint8Array(values.length);
-  for (let i = 0; i < values.length; i++) bytes[i] = Math.round(((values[i] - low) / (high - low)) * 255);
   return bytes;
 }
 
@@ -185,20 +201,90 @@ uniform vec3 fillMin;
 uniform vec3 fillMax;
 uniform vec3 sunDir;
 uniform vec3 drift;
-uniform vec3 shadeColor;
+uniform vec3 shadeTint;
+uniform vec3 rimColor;
+uniform vec3 groundShade;
 uniform vec3 fogColor;
 uniform vec2 fogRange;
 uniform vec2 screenSize;
-uniform vec4 look;
+uniform float pixelAngle;
 varying vec3 vWorld;
 
-const int MAX_STEPS = 80;
+const int MAX_STEPS = ${MARCH_STEPS};
+const int REFINE_STEPS = 6;
+const int SHADOW_STEPS = ${SHADOW_STEPS};
 const float DENSITY_RANGE = ${DENSITY_RANGE.toFixed(1)};
 const float NOISE_SCALE = ${(1 / NOISE_PERIOD).toFixed(5)};
+const float STEP_LENGTH = ${STEP_LENGTH.toFixed(3)};
+const float LEVEL_FLOOR = ${(LEVEL_BULGE * 0.5).toFixed(4)};
+const float LEVEL_BULGE = ${LEVEL_BULGE.toFixed(4)};
+const float LOG_BULGE = ${Math.log(LEVEL_BULGE).toFixed(4)};
+const float LOG_HOLLOW = ${Math.log(LEVEL_HOLLOW).toFixed(4)};
+const float LIT_LEVEL = ${LIT_LEVEL.toFixed(3)};
+const float LIT_LIFT = ${LIT_LIFT.toFixed(3)};
+const float MID_LUMPS = ${MID_LUMPS.toFixed(3)};
+const float SMALL_LUMPS = ${SMALL_LUMPS.toFixed(3)};
+const float YOUNG_LARGE = ${YOUNG_LARGE.toFixed(3)};
+const float YOUNG_SMALL = ${YOUNG_SMALL.toFixed(3)};
+const float DETAIL_SCALE = ${DETAIL_SCALE.toFixed(3)};
+const float NORMAL_REACH = ${NORMAL_REACH.toFixed(3)};
+const float TERMINATOR = ${TERMINATOR.toFixed(3)};
+const float BAND_EDGE = ${BAND_EDGE.toFixed(3)};
+const float SHADOW_START = ${SHADOW_START.toFixed(3)};
+const float SHADOW_STEP = ${SHADOW_STEP.toFixed(3)};
+const float SHADOW_GROWTH = ${SHADOW_GROWTH.toFixed(3)};
+const float SHADOW_EDGE = ${SHADOW_EDGE.toFixed(3)};
+const float CREASE_REACH = ${CREASE_REACH.toFixed(3)};
+const float CREASE_WIDTH = ${CREASE_WIDTH.toFixed(3)};
+const float CREASE_SHADE = ${CREASE_SHADE.toFixed(3)};
+const float HEAT_LOW = ${HEAT_LOW.toFixed(3)};
+const float HEAT_HIGH = ${HEAT_HIGH.toFixed(3)};
+const float HEAT_GLOW = ${HEAT_GLOW.toFixed(3)};
+const float RIM_START = ${RIM_START.toFixed(3)};
+const float RIM_STRENGTH = ${RIM_STRENGTH.toFixed(3)};
+const float GROUND_SHADOW = ${GROUND_SHADOW.toFixed(3)};
+const float GROUND_SHADOW_LEVEL = ${GROUND_SHADOW_LEVEL.toFixed(3)};
 
 float edgeFade(vec3 uvw) {
   vec2 inset = min(uvw.xz, 1.0 - uvw.xz);
-  return clamp(min(inset.x, inset.y) * 24.0, 0.0, 1.0);
+  return clamp(min(min(inset.x, inset.y), 1.0 - uvw.y) * 24.0, 0.0, 1.0);
+}
+
+vec2 densityAt(vec3 p) {
+  vec3 uvw = (p - volMin) / volSize;
+  float root = texture(coarseTex, uvw.xzy).r;
+  float aged = root * root * edgeFade(uvw);
+  float young = 0.0;
+  vec3 near = (p - fineMin) / fineSize;
+  if (near.x > 0.0 && near.x < 1.0 && near.y > 0.0 && near.y < 1.0 && near.z > 0.0 && near.z < 1.0) {
+    float fineRoot = texture(fineTex, near.xzy).r;
+    young = fineRoot * fineRoot;
+  }
+  return vec2(aged + young, young) * DENSITY_RANGE;
+}
+
+float solidAt(vec3 p) {
+  vec2 amount = densityAt(p);
+  float density = amount.x;
+  float depth = log(max(density, 0.001));
+  if (density < LEVEL_FLOOR) return depth - LOG_HOLLOW;
+  vec3 q = (p - drift) * NOISE_SCALE;
+  vec2 large = texture(noiseTex, q).rg;
+  vec2 small = texture(noiseTex, q.zxy * DETAIL_SCALE + 0.37).rg;
+  float agedLump = max(large.r, max(large.g * MID_LUMPS, small.r * SMALL_LUMPS));
+  float youngLump = max(large.g * YOUNG_LARGE, max(small.r, small.g * YOUNG_SMALL));
+  float lump = mix(agedLump, youngLump, amount.y / density);
+  lump *= smoothstep(LEVEL_FLOOR, LEVEL_BULGE, density);
+  return depth - mix(LOG_HOLLOW, LOG_BULGE, lump);
+}
+
+vec3 slopeAt(vec3 p) {
+  vec2 e = vec2(NORMAL_REACH, 0.0);
+  return vec3(
+    solidAt(p + e.xyy) - solidAt(p - e.xyy),
+    solidAt(p + e.yxy) - solidAt(p - e.yxy),
+    solidAt(p + e.yyx) - solidAt(p - e.yyx)
+  ) / (2.0 * NORMAL_REACH);
 }
 
 void main() {
@@ -214,42 +300,83 @@ void main() {
   float tNear = max(max(tLow.x, tLow.y), max(tLow.z, 0.0));
   float tFar = min(min(tHigh.x, tHigh.y), min(tHigh.z, tScene));
 
-  vec3 glowing = vec3(0.0);
-  vec3 scattered = vec3(0.0);
-  float through = 1.0;
+  bool struck = false;
+  float tSurface = 0.0;
+  float peak = -1.0e3;
   if (tFar > tNear) {
-    float stepLength = max(look.x, (tFar - tNear) / float(MAX_STEPS));
-    float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    float t = tNear + stepLength * dither;
+    float stepLength = max(STEP_LENGTH, (tFar - tNear) / float(MAX_STEPS));
+    float t = tNear;
+    float before = -1.0e3;
+    float last = -1.0e3;
     for (int i = 0; i < MAX_STEPS; i++) {
-      if (t >= tFar || through < 0.02) break;
-      vec3 p = camPos + rd * t;
-      vec3 uvw = (p - volMin) / volSize;
-      vec2 cell = texture(coarseTex, uvw.xzy).rg;
-      float amount = cell.r * edgeFade(uvw);
-      vec3 near = (p - fineMin) / fineSize;
-      if (near.x > 0.0 && near.x < 1.0 && near.y > 0.0 && near.y < 1.0 && near.z > 0.0 && near.z < 1.0) amount += texture(fineTex, near.xzy).r;
-      float density = amount * DENSITY_RANGE;
-      if (density > 0.003) {
-        vec3 q = (p - drift) * NOISE_SCALE;
-        float broad = texture(noiseTex, q).r;
-        float fine = texture(noiseTex, q * 3.3 + 0.37).r;
-        float billow = broad * 0.68 + fine * 0.32;
-        float cut = mix(look.y, 0.04, clamp(density * 0.6, 0.0, 1.0));
-        float thick = density * 1.35 * smoothstep(cut - 0.13, cut + 0.13, billow);
-        if (thick > 0.0) {
-          float sunward = texture(noiseTex, q + sunDir * (0.9 * NOISE_SCALE)).r;
-          float relief = clamp(1.0 + (broad - sunward) * look.z, 0.3, 1.6);
-          float lit = clamp(cell.g * relief, 0.0, 1.0);
-          vec4 tint = texture(tintTex, uvw.xzy);
-          vec3 shaded = tint.rgb * mix(shadeColor, vec3(1.0), lit);
-          float opacity = 1.0 - exp(-thick * stepLength);
-          scattered += through * opacity * shaded;
-          glowing += through * opacity * tint.rgb * tint.a * 1.5;
-          through *= 1.0 - opacity;
+      if (t > tFar) break;
+      float here = solidAt(camPos + rd * t);
+      if (here > 0.0) {
+        float outside = max(tNear, t - stepLength);
+        float inside = t;
+        for (int j = 0; j < REFINE_STEPS; j++) {
+          float middle = 0.5 * (outside + inside);
+          if (solidAt(camPos + rd * middle) > 0.0) inside = middle;
+          else outside = middle;
+        }
+        tSurface = inside;
+        struck = true;
+        break;
+      }
+      if (before > -1.0e2 && last > before && last >= here) {
+        float bend = before - 2.0 * last + here;
+        float offset = bend < -1.0e-5 ? clamp(0.5 * (before - here) / bend, -0.5, 0.5) : 0.0;
+        float crest = last - 0.25 * (before - here) * offset;
+        if (crest > peak) {
+          peak = crest;
+          tSurface = t - stepLength + offset * stepLength;
         }
       }
+      before = last;
+      last = here;
       t += stepLength;
+    }
+  }
+
+  float cover = 0.0;
+  vec3 color = vec3(0.0);
+  if (struck || peak > -1.0e2) {
+    vec3 p = camPos + rd * tSurface;
+    vec3 slope = slopeAt(p);
+    float steep = max(length(slope), 1.0e-4);
+    vec3 normal = -slope / steep;
+    if (struck) {
+      cover = 1.0;
+    } else {
+      float gap = max(-peak, 0.0) / steep;
+      cover = clamp(1.0 - gap / (tSurface * pixelAngle), 0.0, 1.0);
+    }
+    if (cover > 0.0) {
+      float blocked = -1.0e3;
+      vec3 sp = p + normal * SHADOW_START;
+      float reach = SHADOW_STEP;
+      for (int k = 0; k < SHADOW_STEPS; k++) {
+        sp += sunDir * reach;
+        reach *= SHADOW_GROWTH;
+        blocked = max(blocked, solidAt(sp));
+        if (blocked > 0.0) break;
+      }
+      float open = 1.0 - smoothstep(-SHADOW_EDGE * steep, 0.0, blocked);
+      float facing = dot(normal, sunDir);
+      float lit = smoothstep(TERMINATOR - BAND_EDGE, TERMINATOR + BAND_EDGE, facing) * open;
+      float pinch = solidAt(p + normal * CREASE_REACH) / steep;
+      float crease = smoothstep(-CREASE_WIDTH, 0.0, pinch);
+      float grazing = 1.0 - max(dot(normal, -rd), 0.0);
+      float rim = smoothstep(RIM_START, 1.0, grazing) * RIM_STRENGTH;
+
+      vec4 tint = texture(tintTex, ((p - volMin) / volSize).xzy);
+      color = mix(tint.rgb * shadeTint, mix(tint.rgb, vec3(1.0), LIT_LIFT) * LIT_LEVEL, lit);
+      color *= 1.0 - crease * CREASE_SHADE;
+      color = mix(color, rimColor, rim * (1.0 - 0.5 * lit));
+      float heat = smoothstep(HEAT_LOW - 0.03, HEAT_LOW + 0.03, tint.a) + smoothstep(HEAT_HIGH - 0.03, HEAT_HIGH + 0.03, tint.a);
+      color += tint.rgb * heat * HEAT_GLOW;
+      float fog = clamp((tSurface - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
+      color = mix(color, fogColor, fog);
     }
   }
 
@@ -258,17 +385,16 @@ void main() {
     vec3 ground = (camPos + rd * tScene + vec3(0.0, 0.3, 0.0) - volMin) / volSize;
     if (ground.x > 0.0 && ground.x < 1.0 && ground.z > 0.0 && ground.z < 1.0 && ground.y < 1.0) {
       ground.y = max(ground.y, 0.0);
-      shadow = (1.0 - texture(coarseTex, ground.xzy).g) * look.w * edgeFade(ground);
+      float dimmed = 1.0 - texture(coarseTex, ground.xzy).g;
+      shadow = smoothstep(GROUND_SHADOW_LEVEL - 0.03, GROUND_SHADOW_LEVEL + 0.03, dimmed) * GROUND_SHADOW * edgeFade(ground);
     }
   }
 
-  float cover = 1.0 - through;
-  float alpha = 1.0 - through * (1.0 - shadow);
+  float alpha = 1.0 - (1.0 - cover) * (1.0 - shadow);
   if (alpha < 0.004) discard;
-  vec3 color = (scattered + glowing) / max(cover, 0.0001);
-  float fog = clamp((tNear - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
-  color = mix(color, fogColor, fog);
-  gl_FragColor = vec4(pow(color, vec3(2.2)) * cover, alpha);
+  vec3 smokeLight = pow(color, vec3(2.2)) * cover;
+  vec3 shadowLight = pow(groundShade, vec3(2.2)) * shadow * (1.0 - cover);
+  gl_FragColor = vec4(smokeLight + shadowLight, alpha);
 }`;
 
 class DensityGrid {
@@ -359,8 +485,8 @@ class DensityGrid {
     }
     for (let j = y0; j <= y1; j++) {
       const u = (j - cy) / reachY;
-      const falloff = 1 - u * u * u * u;
-      weightY[j - y0] = falloff * falloff;
+      const falloff = 1 - u * u;
+      weightY[j - y0] = falloff * falloff * falloff;
     }
     for (let k = z0; k <= z1; k++) {
       const u = (k - cz) / reachX;
@@ -442,7 +568,7 @@ export class SmokeVolume {
     this.coarseTexture = volumeTexture(this.coarseBytes, CX, CZ, CY, Constants.TEXTUREFORMAT_RG, Texture.CLAMP_ADDRESSMODE);
     this.fineTexture = volumeTexture(this.fineBytes, FX, FZ, FY, Constants.TEXTUREFORMAT_R, Texture.CLAMP_ADDRESSMODE);
     this.tintTexture = volumeTexture(this.tintBytes, TX, TZ, TY, Constants.TEXTUREFORMAT_RGBA, Texture.CLAMP_ADDRESSMODE);
-    const noise = volumeTexture(buildBillowNoise(), NOISE_SIZE, NOISE_SIZE, NOISE_SIZE, Constants.TEXTUREFORMAT_R, Texture.WRAP_ADDRESSMODE);
+    const noise = volumeTexture(buildLumpNoise(), NOISE_SIZE, NOISE_SIZE, NOISE_SIZE, Constants.TEXTUREFORMAT_RG, Texture.WRAP_ADDRESSMODE);
 
     const depthRenderer = scene.enableDepthRenderer(camera, false, false, Texture.NEAREST_SAMPLINGMODE, true);
 
@@ -465,11 +591,13 @@ export class SmokeVolume {
           "fillMax",
           "sunDir",
           "drift",
-          "shadeColor",
+          "shadeTint",
+          "rimColor",
+          "groundShade",
           "fogColor",
           "fogRange",
           "screenSize",
-          "look",
+          "pixelAngle",
         ],
         samplers: ["coarseTex", "fineTex", "tintTex", "noiseTex", "depthMap"],
         needAlphaBlending: true,
@@ -483,11 +611,12 @@ export class SmokeVolume {
     this.material.setTexture("noiseTex", noise);
     this.material.setTexture("depthMap", depthRenderer.getDepthMap());
     this.material.setColor3("fogColor", fogColor);
-    this.material.setColor3("shadeColor", new Color3(0.76, 0.71, 0.72));
+    this.material.setColor3("shadeTint", new Color3(0.74, 0.69, 0.75));
+    this.material.setColor3("rimColor", new Color3(1, 0.93, 0.84));
+    this.material.setColor3("groundShade", new Color3(0.42, 0.2, 0.17));
     this.material.setVector2("fogRange", new Vector2(fogStart, fogEnd));
     this.material.setVector3("volSize", new Vector3(SIZE_X, SIZE_Y, SIZE_Z));
     this.material.setVector3("fineSize", new Vector3(FINE_SIZE_X, FINE_SIZE_Y, FINE_SIZE_Z));
-    this.material.setVector4("look", new Vector4(STEP_LENGTH, EROSION, RELIEF, GROUND_SHADOW));
 
     const engine = scene.getEngine();
     this.material.onBindObservable.add(() => {
@@ -496,6 +625,7 @@ export class SmokeVolume {
       effect.setVector3("camPos", camera.globalPosition);
       effect.setVector3("camForward", camera.getDirection(Vector3.Forward()));
       effect.setVector2("screenSize", this.screenSize.set(engine.getRenderWidth(), engine.getRenderHeight()));
+      effect.setFloat("pixelAngle", (2 * Math.tan(camera.fov / 2)) / engine.getRenderHeight());
     });
 
     this.mesh = MeshBuilder.CreateBox("smokeVolume", { size: 1 }, scene);
@@ -559,7 +689,9 @@ export class SmokeVolume {
     this.fillMax.set(-Infinity, -Infinity, -Infinity);
     this.includeBounds(coarse);
     this.includeBounds(fine);
-    this.sunward.copyFrom(view.sunDirection).scaleInPlace(-1).normalize();
+    this.sunward.copyFrom(view.sunDirection).scaleInPlace(-1);
+    this.sunward.y *= SUN_FLATTEN;
+    this.sunward.normalize();
     this.material.setVector3("volMin", origin);
     this.material.setVector3("fineMin", fineOrigin);
     this.material.setVector3("fillMin", this.fillMin);
@@ -616,9 +748,11 @@ export class SmokeVolume {
       const column = Math.max(2 * height, Math.min(field.py[p] + height - base, 2 * height + COLUMN_ASPECT * radius));
       const spread = COLUMN_SPREAD * column;
       const worldY = base + COLUMN_CENTER * column;
-      const reach = radius * KERNEL_REACH;
-      const rise = spread * KERNEL_REACH;
-      const amplitude = strength * EXTINCTION * Math.sqrt(height / spread);
+      const tightReach = radius * KERNEL_REACH;
+      const tightRise = spread * KERNEL_REACH;
+      const reach = Math.max(tightReach, MIN_REACH);
+      const rise = Math.max(tightRise, MIN_RISE);
+      const amplitude = strength * EXTINCTION * Math.sqrt(height / spread) * (tightReach / reach) * Math.sqrt(tightRise / rise);
 
       let broad = 1;
       if (radius < SPLIT_HIGH && fine.contains(worldX, worldZ, reach)) {
@@ -689,7 +823,7 @@ export class SmokeVolume {
       for (let k = fine.minZ; k <= fine.maxZ; k++) {
         const row = fine.slice * j + FX * k;
         for (let i = fine.minX; i <= fine.maxX; i++) {
-          const amount = data[row + i] * DENSITY_TO_BYTE;
+          const amount = Math.sqrt(data[row + i]) * ROOT_DENSITY_TO_BYTE;
           bytes[row + i] = amount > 255 ? 255 : amount;
         }
       }
@@ -741,13 +875,14 @@ export class SmokeVolume {
             const sourceI = i + stepX;
             if (sourceI >= x0 && sourceI <= x1) {
               const source = sourceRow + i;
-              depth = above[source] + (shown[aboveBase + source] + unseen[aboveBase + source]) * pathLength;
+              const blocking = shown[aboveBase + source] + unseen[aboveBase + source] - SHADOW_FLOOR;
+              depth = blocking > 0 ? above[source] + blocking * pathLength : above[source];
             }
           }
           const cell = row + i;
           here[cell] = depth;
           const offset = (layerBase + cell) * 2;
-          const amount = shown[layerBase + cell] * DENSITY_TO_BYTE;
+          const amount = Math.sqrt(shown[layerBase + cell]) * ROOT_DENSITY_TO_BYTE;
           packed[offset] = amount > 255 ? 255 : amount;
           const step = depth * LIGHT_SCALE;
           packed[offset + 1] = LIGHT_TABLE[step >= LIGHT_STEPS ? LIGHT_STEPS - 1 : step | 0];

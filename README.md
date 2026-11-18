@@ -28,7 +28,7 @@ pnpm dev -- --host <address>
 
 - `src/vehicle.ts` — car handling model. `pnpm sim` prints drift telemetry for tuning it without a browser.
 - `src/smoke.ts` — smoke puff simulation and the density grid enemies are damaged through. `pnpm smoke-bench` measures its CPU cost headless.
-- `src/smokeVolume.ts` — volumetric smoke rendering: voxelises the puffs into 3D textures each frame and ray-marches them with sun shadowing.
+- `src/smokeVolume.ts` — volumetric smoke rendering: voxelises the puffs into 3D textures each frame and ray-marches them as a solid, cel-shaded surface of clustered lumps with hard two-tone sun shading.
 - `src/world.ts`, `src/terrain.ts`, `src/props.ts` — infinite chunked desert and its obstacles.
 - `src/loose.ts` — tumbling physics for plants knocked out of the ground. `pnpm plant-sim` prints what a hit costs the car.
 - `src/enemies.ts` — raider vehicles and the spawn director.
