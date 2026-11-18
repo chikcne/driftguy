@@ -3,7 +3,7 @@ import { writeTransform } from "./kit";
 import { LooseSystem, type Mover, type Obstruction, type Shove } from "./loose";
 import { hash2, lerp, type Rng, saturate, seededRng, TAU } from "./math";
 import { PALETTE } from "./palette";
-import { buildProps, type PropDef, type PropName } from "./props";
+import { buildProps, type PropDef, type PropName, type StackPart, TIRE_STACK, TIRE_STACK_FOOTPRINT } from "./props";
 import { CELL_SIZE, CHUNK_CELLS, CHUNK_SIZE, groundHeight, vertexHeight } from "./terrain";
 
 export interface Collider {
@@ -32,7 +32,16 @@ interface Rooted {
   alive: boolean;
   list: number[];
   offset: number;
+  group: Rooted[] | null;
 }
+
+interface StackPlacement {
+  scale: number;
+  y: number;
+  group: Rooted[];
+}
+
+type ScatterName = PropName | "tireStack";
 
 interface Chunk {
   cx: number;
@@ -58,12 +67,16 @@ const PLACEMENT_ATTEMPTS = 5;
 const ROOTED_ID_STRIDE = 256;
 const LOOSE_CAPACITY = 64;
 
-const SCATTER_TABLE: Array<[PropName, number]> = [
+const STACK_MIN_SCALE = 1;
+const STACK_MAX_SCALE = 1.2;
+const STACK_SPACING = 1.5;
+
+const SCATTER_TABLE: Array<[ScatterName, number]> = [
   ["rockA", 5],
   ["rockB", 4],
   ["spire", 1.4],
   ["wreck", 1.6],
-  ["tires", 1],
+  ["tireStack", 1],
   ["cactus", 3],
   ["deadTree", 2],
   ["ribs", 0.5],
@@ -78,7 +91,7 @@ function cellKey(a: number, b: number): number {
   return (a + KEY_OFFSET) * KEY_STRIDE + (b + KEY_OFFSET);
 }
 
-function pickScatter(rng: Rng): PropName {
+function pickScatter(rng: Rng): ScatterName {
   let roll = rng() * SCATTER_TOTAL;
   for (const [name, weight] of SCATTER_TABLE) {
     roll -= weight;
@@ -247,7 +260,8 @@ export class World {
       for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt++) {
         const x = originX + rng() * CHUNK_SIZE;
         const z = originZ + rng() * CHUNK_SIZE;
-        if (this.place(chunk, name, x, z, rng() * TAU, rng)) break;
+        const yaw = rng() * TAU;
+        if (name === "tireStack" ? this.placeStack(chunk, TIRE_STACK, TIRE_STACK_FOOTPRINT, x, z, yaw, rng) : this.place(chunk, name, x, z, yaw, rng)) break;
       }
     }
     for (let i = 0; i < 16; i++) this.place(chunk, "pebble", originX + rng() * CHUNK_SIZE, originZ + rng() * CHUNK_SIZE, rng() * TAU, rng);
@@ -265,25 +279,46 @@ export class World {
     ring("wall", 13, 0.2, facing + 0.2 + Math.PI / 2);
     ring("wall", 14, 3.6, facing + 3.6 + Math.PI / 2);
     ring("wreck", 8, 4.6, rng() * TAU);
-    ring("tires", 6.5, 1.0, rng() * TAU);
+    this.placeStack(chunk, TIRE_STACK, TIRE_STACK_FOOTPRINT, x + Math.sin(facing + 1.0) * 6.5, z + Math.cos(facing + 1.0) * 6.5, rng() * TAU, rng);
     ring("barrel", 5.2, 5.4, 0);
     ring("barrel", 6.1, 5.65, 0);
     ring("barrel", 10.5, 1.5, 0);
     ring("pylon", 11.5, 5.0, facing);
   }
 
-  private place(chunk: Chunk, name: PropName, x: number, z: number, yaw: number, rng: Rng): boolean {
+  private fits(chunk: Chunk, x: number, z: number, footprint: number): boolean {
+    if (Math.hypot(x, z) < SPAWN_CLEARING) return false;
+    for (const other of chunk.colliders) {
+      if (Math.hypot(other.x - x, other.z - z) < other.r + footprint + STACK_SPACING) return false;
+    }
+    for (const other of chunk.rooted) {
+      if (other.solid && Math.hypot(other.x - x, other.z - z) < other.r + footprint + STACK_SPACING) return false;
+    }
+    return true;
+  }
+
+  private placeStack(chunk: Chunk, parts: StackPart[], footprint: number, x: number, z: number, yaw: number, rng: Rng): boolean {
+    const scale = lerp(STACK_MIN_SCALE, STACK_MAX_SCALE, rng());
+    if (!this.fits(chunk, x, z, footprint * scale)) return false;
+    const sin = Math.sin(yaw);
+    const cos = Math.cos(yaw);
+    const base = groundHeight(x, z);
+    const group: Rooted[] = [];
+    for (const part of parts) {
+      const px = x + (part.x * cos + part.z * sin) * scale;
+      const pz = z + (-part.x * sin + part.z * cos) * scale;
+      const ground = part.y > 0 ? base : groundHeight(px, pz);
+      this.place(chunk, part.name, px, pz, yaw + rng() * TAU, rng, { scale, y: ground + part.y * scale, group });
+    }
+    return true;
+  }
+
+  private place(chunk: Chunk, name: PropName, x: number, z: number, yaw: number, rng: Rng, stack?: StackPlacement): boolean {
     const prop = this.props[name];
-    const scale = lerp(prop.minScale, prop.maxScale, rng());
-    if (prop.colliders.length > 0) {
-      if (Math.hypot(x, z) < SPAWN_CLEARING) return false;
+    const scale = stack?.scale ?? lerp(prop.minScale, prop.maxScale, rng());
+    if (!stack && prop.colliders.length > 0) {
       const footprint = prop.colliders.reduce((reach, c) => Math.max(reach, Math.hypot(c.x, c.z) + c.r), 0) * scale;
-      for (const other of chunk.colliders) {
-        if (Math.hypot(other.x - x, other.z - z) < other.r + footprint + 1.5) return false;
-      }
-      for (const other of chunk.rooted) {
-        if (other.solid && Math.hypot(other.x - x, other.z - z) < other.r + footprint + 1.5) return false;
-      }
+      if (!this.fits(chunk, x, z, footprint)) return false;
     }
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
@@ -299,12 +334,12 @@ export class World {
       list = [];
       chunk.placements.set(name, list);
     }
-    const squash = lerp(0.85, 1.15, rng());
-    const y = groundHeight(x, z) - prop.sink * scale;
+    const squash = stack ? 1 : lerp(0.85, 1.15, rng());
+    const y = (stack?.y ?? groundHeight(x, z)) - prop.sink * scale;
     if (prop.loose) {
       const id = cellKey(chunk.cx, chunk.cz) * ROOTED_ID_STRIDE + chunk.rooted.length;
       const alive = !this.uprooted.has(id);
-      chunk.rooted.push({
+      const rooted: Rooted = {
         id,
         name,
         x,
@@ -318,7 +353,10 @@ export class World {
         alive,
         list,
         offset: list.length,
-      });
+        group: stack?.group ?? null,
+      };
+      chunk.rooted.push(rooted);
+      stack?.group.push(rooted);
       if (!alive) return true;
     }
     writeTransform(list, list.length, x, y, z, yaw, 0, 0, scale, scale * squash, scale);
@@ -326,13 +364,18 @@ export class World {
   }
 
   private uproot(plant: Rooted): void {
-    const spec = this.props[plant.name].loose;
-    if (!spec) return;
-    plant.alive = false;
-    this.uprooted.add(plant.id);
-    plant.list.fill(0, plant.offset, plant.offset + 16);
-    this.rebuildInstancesOf(plant.name);
-    this.loose.spawn(plant.name, spec, plant.x, plant.y, plant.z, plant.yaw, plant.scale, plant.scaleY);
+    const members = plant.group ?? [plant];
+    const touched = new Set<PropName>();
+    for (const member of members) {
+      const spec = this.props[member.name].loose;
+      if (!spec || !member.alive) continue;
+      member.alive = false;
+      this.uprooted.add(member.id);
+      member.list.fill(0, member.offset, member.offset + 16);
+      touched.add(member.name);
+      this.loose.spawn(member.name, spec, member.x, member.y, member.z, member.yaw, member.scale, member.scaleY);
+    }
+    for (const name of touched) this.rebuildInstancesOf(name);
   }
 
   private renderLoose(): void {

@@ -33,7 +33,7 @@ Damaging raiders fills the nitrous gauge; each full gauge banks a tank, up to th
 - `src/smoke.ts` — smoke puff simulation and the density grid enemies are damaged through. `pnpm smoke-bench` measures its CPU cost headless.
 - `src/smokeVolume.ts` — volumetric smoke rendering: voxelises the puffs into 3D textures each frame and ray-marches them as a solid, cel-shaded surface of clustered lumps with hard two-tone sun shading.
 - `src/world.ts`, `src/terrain.ts`, `src/props.ts` — infinite chunked desert and its obstacles.
-- `src/loose.ts` — tumbling physics for plants knocked out of the ground. `pnpm plant-sim` prints what a hit costs the car.
+- `src/loose.ts` — tumbling physics for plants and tyre stacks knocked out of the ground. `pnpm plant-sim` prints what a hit costs the car.
 - `src/enemies.ts` — raider vehicles and the spawn director, including how they lose control in smoke and the skidding wreck phase between dying and exploding.
 - `src/gibs.ts` — the wreckage a dead raider bursts into: per-vehicle part lists and their bounce, roll and settle physics.
 - `src/upgrades.ts` — upgrade definitions and the stats derived from them.

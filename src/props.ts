@@ -25,7 +25,8 @@ export type PropName =
   | "rockB"
   | "spire"
   | "wreck"
-  | "tires"
+  | "tire"
+  | "tireDark"
   | "shack"
   | "tower"
   | "wall"
@@ -38,6 +39,24 @@ export type PropName =
   | "shrub";
 
 const HALF_PI = Math.PI / 2;
+const TIRE_DIAMETER = 1.1;
+const TIRE_HEIGHT = 0.36;
+const TIRE_TREAD_POINTS = 8;
+
+export interface StackPart {
+  name: PropName;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const TIRE_STACK: StackPart[] = [
+  { name: "tire", x: 0, y: 0, z: 0 },
+  { name: "tireDark", x: 0.08, y: TIRE_HEIGHT + 0.01, z: 0.05 },
+  { name: "tire", x: -0.05, y: TIRE_HEIGHT * 2 + 0.02, z: -0.04 },
+  { name: "tire", x: 1.15, y: 0, z: 0.4 },
+];
+export const TIRE_STACK_FOOTPRINT = 1.75;
 
 function solid(r: number): LocalCollider[] {
   return [{ x: 0, z: 0, r }];
@@ -47,6 +66,17 @@ function stalk(mass: number, height: number, radius: number, limbs: LoosePoint[]
   const points: LoosePoint[] = [];
   for (let i = 0; i < 4; i++) points.push([0, radius + ((height - radius * 2) * i) / 3, 0, radius]);
   return { mass, radius, centre: height * 0.45, points: [...points, ...limbs] };
+}
+
+function tread(mass: number, diameter: number, height: number): LooseSpec {
+  const half = height / 2;
+  const ring = diameter / 2 - half;
+  const points: LoosePoint[] = [];
+  for (let i = 0; i < TIRE_TREAD_POINTS; i++) {
+    const angle = (i / TIRE_TREAD_POINTS) * Math.PI * 2;
+    points.push([Math.sin(angle) * ring, half, Math.cos(angle) * ring, half]);
+  }
+  return { mass, radius: diameter / 2, centre: half, points };
 }
 
 function tuft(mass: number, height: number, radius: number): LooseSpec {
@@ -84,12 +114,9 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     .box([0.3, 0.3, 0.3], [-0.8, 0.2, -1.5], P.metalDark)
     .build("wreck");
 
-  const tires = kit
-    .cylinder({ top: 1.1, bottom: 1.1, height: 0.36, sides: 9 }, [0, 0.18, 0], P.rubber)
-    .cylinder({ top: 1.1, bottom: 1.1, height: 0.36, sides: 9 }, [0.08, 0.55, 0.05], P.metalDark)
-    .cylinder({ top: 1.1, bottom: 1.1, height: 0.36, sides: 9 }, [-0.05, 0.92, -0.04], P.rubber)
-    .cylinder({ top: 1.1, bottom: 1.1, height: 0.36, sides: 9 }, [1.15, 0.18, 0.4], P.rubber, [0.2, 0, 0])
-    .build("tires");
+  const tireShape = { top: TIRE_DIAMETER, bottom: TIRE_DIAMETER, height: TIRE_HEIGHT, sides: 9 };
+  const tire = kit.cylinder(tireShape, [0, TIRE_HEIGHT / 2, 0], P.rubber).build("tire");
+  const tireDark = kit.cylinder(tireShape, [0, TIRE_HEIGHT / 2, 0], P.metalDark).build("tireDark");
 
   const shack = kit
     .box([5, 2.6, 4], [0, 1.3, 0], P.teal)
@@ -190,7 +217,8 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     rockB: def(rockB, solid(1.15), 1.2, 3.2, true, 0.25),
     spire: def(spire, solid(3.3), 0.8, 1.5, true, 0.6),
     wreck: def(wreck, solid(1.9), 1, 1.15),
-    tires: def(tires, solid(0.9), 1, 1.2),
+    tire: def(tire, solid(TIRE_DIAMETER / 2), 1, 1.2, true, 0.02, tread(0.07, TIRE_DIAMETER, TIRE_HEIGHT)),
+    tireDark: def(tireDark, solid(TIRE_DIAMETER / 2), 1, 1.2, true, 0.02, tread(0.07, TIRE_DIAMETER, TIRE_HEIGHT)),
     shack: def(shack, solid(3.0), 1, 1.2),
     tower: def(tower, solid(2.0), 1, 1.25),
     wall: def(
