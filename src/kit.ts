@@ -127,13 +127,17 @@ export function writeTransform(
 export class InstanceBatch {
   readonly matrices: Float32Array;
   count = 0;
+  private readonly tints: Float32Array | null;
 
   constructor(
     readonly mesh: Mesh,
     readonly capacity: number,
+    tinted = false,
   ) {
     this.matrices = new Float32Array(capacity * 16);
     mesh.thinInstanceSetBuffer("matrix", this.matrices, 16, false);
+    this.tints = tinted ? new Float32Array(capacity * 4).fill(1) : null;
+    if (this.tints) mesh.thinInstanceSetBuffer("color", this.tints, 4, false);
     mesh.thinInstanceCount = 0;
     mesh.alwaysSelectAsActiveMesh = true;
     mesh.setEnabled(false);
@@ -149,9 +153,19 @@ export class InstanceBatch {
     this.count++;
   }
 
+  tint(r: number, g: number, b: number): void {
+    if (!this.tints || this.count === 0) return;
+    const offset = (this.count - 1) * 4;
+    this.tints[offset] = r;
+    this.tints[offset + 1] = g;
+    this.tints[offset + 2] = b;
+  }
+
   commit(): void {
     this.mesh.thinInstanceCount = this.count;
     this.mesh.setEnabled(this.count > 0);
-    if (this.count > 0) this.mesh.thinInstanceBufferUpdated("matrix");
+    if (this.count === 0) return;
+    this.mesh.thinInstanceBufferUpdated("matrix");
+    if (this.tints) this.mesh.thinInstanceBufferUpdated("color");
   }
 }

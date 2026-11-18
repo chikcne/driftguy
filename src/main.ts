@@ -13,8 +13,9 @@ import {
 } from "@babylonjs/core";
 import { GameAudio } from "./audio";
 import { GunSystem, type PickupKind, PickupSystem, REPAIR_CRATE_VALUE, REPAIR_DROP_VALUE } from "./combat";
-import { BlastPool, SkidTracks } from "./effects";
+import { BlastPool, ShockRings, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
+import { GibSystem } from "./gibs";
 import { Hud } from "./hud";
 import { Input } from "./input";
 import type { Shove } from "./loose";
@@ -71,6 +72,10 @@ const CRATE_DISTANCE_MAX = 80;
 const CRATE_HEADING_SPREAD = 1.2;
 const CRATE_CLEARANCE = 2.5;
 const BLAST_CHAIN_DELAY = 0.09;
+const BOSS_BLAST_RADIUS = 11;
+const EMBER_GIB_POWER = 1.9;
+const HEARING_RANGE = 110;
+const PAN_RANGE = 45;
 const TRACK_SLIP_SPEED = 2.5;
 const COMPOUND_BAND_SECONDS = 0.7;
 
@@ -93,6 +98,8 @@ class Game {
   private readonly gun: GunSystem;
   private readonly pickups: PickupSystem;
   private readonly blasts: BlastPool;
+  private readonly rings: ShockRings;
+  private readonly gibs: GibSystem;
   private readonly tracks: SkidTracks;
   private readonly carModel: PlayerCarModel;
   private readonly car = new CarBody();
@@ -173,6 +180,8 @@ class Game {
     this.gun = new GunSystem(this.scene);
     this.pickups = new PickupSystem(this.scene, flat);
     this.blasts = new BlastPool(this.scene);
+    this.rings = new ShockRings(this.scene);
+    this.gibs = new GibSystem(this.scene, flat, shadows);
     this.tracks = new SkidTracks(this.scene, 4);
 
     this.carModel = buildPlayerCar(this.scene);
@@ -295,6 +304,8 @@ class Game {
     this.gun.clear();
     this.pickups.clear();
     this.blasts.clear();
+    this.rings.clear();
+    this.gibs.clear();
     this.tracks.clear();
     this.smoke.clear();
     this.world.reset();
@@ -315,6 +326,8 @@ class Game {
   private idle(dt: number): void {
     this.world.step(dt, this.car.x, this.car.z);
     this.blasts.update(dt);
+    this.rings.update(dt);
+    this.gibs.update(dt, this.smoke);
     this.updateSmoke(dt);
     this.updateCarVisuals(dt);
     this.updateCamera(dt);
@@ -356,6 +369,8 @@ class Game {
     this.pickups.update(dt, this.car, this.stats.magnetRadius, (kind, value) => this.collect(kind, value));
 
     this.blasts.update(dt);
+    this.rings.update(dt);
+    this.gibs.update(dt, this.smoke);
     this.updateSmoke(dt);
     this.updateCarVisuals(dt);
     this.updateCamera(dt);
@@ -527,7 +542,23 @@ class Game {
     if (Math.random() < REPAIR_DROP_CHANCE * (1 + spec.mass * 2)) this.pickups.drop("repair", enemy.x, enemy.z, 1, REPAIR_DROP_VALUE);
 
     const y = groundHeight(enemy.x, enemy.z) + 1;
+    const ember = enemy.emberTimer > 0 && this.stats.emberDamage > 0;
+    const boss = spec.kind === "rig";
+    const size = saturate(spec.radius / 3.6);
     this.blasts.spawn(enemy.x, y, enemy.z, spec.radius * 1.6);
+    this.gibs.burst({
+      kind: spec.kind,
+      x: enemy.x,
+      z: enemy.z,
+      heading: enemy.heading,
+      vx: enemy.vx,
+      vz: enemy.vz,
+      pushX: enemy.knockX,
+      pushZ: enemy.knockZ,
+      power: ember ? EMBER_GIB_POWER : 1,
+      burning: ember,
+    });
+    this.gibs.sparks(enemy.x, y, enemy.z, (ember ? 14 : 5) + Math.round(spec.radius * 2), ember ? 24 : 15, enemy.vx, enemy.vz);
     for (let i = 0; i < 3 + Math.round(spec.radius * 2); i++) {
       this.smoke.emit(
         i % 3 === 0 ? PUFF.fire : PUFF.soot,
@@ -544,9 +575,27 @@ class Game {
         2,
       );
     }
-    if (enemy.emberTimer > 0 && this.stats.emberDamage > 0) {
+    if (ember) {
       this.pendingBlasts.push({ x: enemy.x, z: enemy.z, delay: BLAST_CHAIN_DELAY, damage: this.stats.emberDamage, radius: this.stats.emberRadius });
+    } else if (boss) {
+      this.fireball(enemy.x, enemy.z, BOSS_BLAST_RADIUS);
+    } else {
+      this.audio.wreck(size, this.loudnessAt(enemy.x, enemy.z), this.panAt(enemy.x));
+      this.shake = Math.max(this.shake, (0.12 + 0.3 * size) * this.nearnessAt(enemy.x, enemy.z));
     }
+  }
+
+  private nearnessAt(x: number, z: number): number {
+    return saturate(1 - Math.hypot(x - this.car.x, z - this.car.z) / 60);
+  }
+
+  private loudnessAt(x: number, z: number): number {
+    const fade = saturate(1 - Math.hypot(x - this.cameraTarget.x, z - this.cameraTarget.z) / HEARING_RANGE);
+    return fade * fade;
+  }
+
+  private panAt(x: number): number {
+    return clamp((x - this.cameraTarget.x) / PAN_RANGE, -1, 1) * 0.7;
   }
 
   private updateBlasts(dt: number): void {
@@ -563,16 +612,27 @@ class Game {
   }
 
   private detonate(x: number, z: number, radius: number, damage: number): void {
+    this.fireball(x, z, radius);
+    this.enemies.hurtArea(x, z, radius, damage);
+  }
+
+  private fireball(x: number, z: number, radius: number): void {
     const y = groundHeight(x, z) + 1.2;
+    const nearness = this.nearnessAt(x, z);
     this.blasts.spawn(x, y, z, radius);
+    this.blasts.spawn(x, y + 0.6, z, radius * 0.55);
+    this.rings.spawn(x, z, radius * 1.7);
+    this.gibs.sparks(x, y, z, 16, 30, 0, 0);
     this.smoke.shockwave(x, z, radius * 2.4, 16);
     for (let i = 0; i < 9; i++) {
       this.smoke.emit(PUFF.fire, x + randSigned(radius * 0.5), y, z + randSigned(radius * 0.5), randSigned(7), randRange(2, 7), randSigned(7), randRange(1, 1.8), 3, randRange(0.4, 0.8), 0.9, 2.5);
     }
-    this.enemies.hurtArea(x, z, radius, damage);
-    this.audio.explosion();
-    const distance = Math.hypot(x - this.car.x, z - this.car.z);
-    this.shake = Math.max(this.shake, 0.5 * saturate(1 - distance / 60));
+    for (let i = 0; i < 4; i++) {
+      this.smoke.emit(PUFF.soot, x + randSigned(radius * 0.3), y + 1, z + randSigned(radius * 0.3), randSigned(2), randRange(5, 9), randSigned(2), randRange(1, 1.5), 2.2, randRange(1.4, 2.2), 0.85, 2.5);
+    }
+    this.audio.explosion(saturate(radius / 10), this.loudnessAt(x, z), this.panAt(x));
+    this.shake = Math.max(this.shake, 0.75 * nearness);
+    this.input.rumble(0.5 * nearness, 0.9 * nearness, 220);
   }
 
   private updateCrates(dt: number): void {

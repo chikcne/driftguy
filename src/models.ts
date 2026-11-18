@@ -1,4 +1,4 @@
-import { Mesh, Scene, TransformNode } from "@babylonjs/core";
+import { Color3, Mesh, Scene, TransformNode } from "@babylonjs/core";
 import { ModelKit, type Triple } from "./kit";
 import { PALETTE as P } from "./palette";
 import { AXLE_FRONT, AXLE_REAR, HALF_TRACK } from "./vehicle";
@@ -248,4 +248,23 @@ export function buildRepairModel(scene: Scene): Mesh {
 
 export function buildBulletModel(scene: Scene): Mesh {
   return new ModelKit(scene).box([0.14, 0.14, 1.4], [0, 0, 0], P.headlight).build("bullet");
+}
+
+export type GibShape = "box" | "wheel" | "pipe" | "spike" | "skull" | "spark";
+
+export function buildGibModels(scene: Scene): Record<GibShape, Mesh> {
+  const kit = new ModelKit(scene);
+  const white = Color3.White();
+  const lengthwise: Triple = [HALF_PI, 0, 0];
+  return {
+    box: kit.box([1, 1, 1], [0, 0, 0], white).build("gibBox"),
+    wheel: kit
+      .cylinder({ top: 1, bottom: 1, height: 1, sides: 8 }, [0, 0, 0], P.rubber, WHEEL_AXIS)
+      .cylinder({ top: 0.5, bottom: 0.5, height: 1.06, sides: 6 }, [0, 0, 0], P.metal, WHEEL_AXIS)
+      .build("gibWheel"),
+    pipe: kit.cylinder({ top: 1, bottom: 1, height: 1, sides: 8 }, [0, 0, 0], white, lengthwise).build("gibPipe"),
+    spike: kit.cylinder({ top: 0, bottom: 1, height: 1, sides: 5 }, [0, 0, 0], white, lengthwise).build("gibSpike"),
+    skull: kit.blob({ radius: 0.5, roughness: 0.05 }, [0, 0, 0], white).build("gibSkull"),
+    spark: kit.box([1, 1, 1], [0, 0, 0], white).build("gibSpark"),
+  };
 }

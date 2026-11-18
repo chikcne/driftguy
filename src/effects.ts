@@ -69,6 +69,74 @@ export class BlastPool {
   }
 }
 
+const RING_POOL = 6;
+const RING_SECONDS = 0.5;
+const RING_LIFT = 0.7;
+
+interface Ring {
+  mesh: Mesh;
+  material: StandardMaterial;
+  age: number;
+  radius: number;
+  active: boolean;
+}
+
+export class ShockRings {
+  private readonly rings: Ring[] = [];
+  private cursor = 0;
+
+  constructor(scene: Scene) {
+    for (let i = 0; i < RING_POOL; i++) {
+      const mesh = MeshBuilder.CreateTorus("ring", { diameter: 2, thickness: 0.09, tessellation: 40 }, scene);
+      const material = new StandardMaterial("ring", scene);
+      material.disableLighting = true;
+      material.emissiveColor = new Color3(1, 0.82, 0.5);
+      material.alpha = 0;
+      mesh.material = material;
+      mesh.alphaIndex = 19;
+      mesh.isPickable = false;
+      mesh.setEnabled(false);
+      this.rings.push({ mesh, material, age: 0, radius: 1, active: false });
+    }
+  }
+
+  clear(): void {
+    for (const ring of this.rings) {
+      ring.active = false;
+      ring.mesh.setEnabled(false);
+    }
+  }
+
+  spawn(x: number, z: number, radius: number): void {
+    const ring = this.rings[this.cursor];
+    this.cursor = (this.cursor + 1) % RING_POOL;
+    ring.age = 0;
+    ring.radius = radius;
+    ring.active = true;
+    ring.mesh.position.set(x, groundHeight(x, z) + RING_LIFT, z);
+    ring.mesh.scaling.setAll(0.01);
+    ring.mesh.setEnabled(true);
+  }
+
+  update(dt: number): void {
+    for (const ring of this.rings) {
+      if (!ring.active) continue;
+      ring.age += dt;
+      const t = ring.age / RING_SECONDS;
+      if (t >= 1) {
+        ring.active = false;
+        ring.mesh.setEnabled(false);
+        continue;
+      }
+      const eased = 1 - (1 - t) * (1 - t) * (1 - t);
+      const reach = ring.radius * (0.15 + 0.85 * eased);
+      ring.mesh.scaling.set(reach, 1 + 5 * (1 - t), reach);
+      ring.material.alpha = 0.8 * (1 - t) * (1 - t);
+      Color3.LerpToRef(BLAST_HOT, BLAST_COOL, t, ring.material.emissiveColor);
+    }
+  }
+}
+
 const MAX_TRACK_QUADS = 3000;
 const TRACK_HALF_WIDTH = 0.16;
 const TRACK_LIFT = 0.05;

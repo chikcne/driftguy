@@ -2,6 +2,10 @@ import { clamp, lerp } from "./math";
 
 const MASTER_VOLUME = 0.45;
 const GEAR_COUNT = 4;
+const POP_GAP = 0.045;
+const BLAST_GAP = 0.07;
+const CRUNCH_CURVE = new Float32Array(257);
+for (let i = 0; i < CRUNCH_CURVE.length; i++) CRUNCH_CURVE[i] = Math.tanh((i / 128 - 1) * 3);
 
 export class GameAudio {
   private context: AudioContext | null = null;
@@ -13,8 +17,11 @@ export class GameAudio {
   private skidGain: GainNode | null = null;
   private skidFilter: BiquadFilterNode | null = null;
   private noise: AudioBuffer | null = null;
+  private impacts: DynamicsCompressorNode | null = null;
   private muted = false;
   private lastShot = 0;
+  private lastPop = -1;
+  private lastBlast = -1;
 
   unlock(): void {
     if (this.context) {
@@ -28,6 +35,14 @@ export class GameAudio {
     this.master = context.createGain();
     this.master.gain.value = MASTER_VOLUME;
     this.master.connect(context.destination);
+
+    this.impacts = context.createDynamicsCompressor();
+    this.impacts.threshold.value = -16;
+    this.impacts.knee.value = 10;
+    this.impacts.ratio.value = 9;
+    this.impacts.attack.value = 0.002;
+    this.impacts.release.value = 0.22;
+    this.impacts.connect(this.master);
 
     this.noise = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
     const samples = this.noise.getChannelData(0);
@@ -87,8 +102,35 @@ export class GameAudio {
     this.burst(0.18, 220, clamp(strength, 0.1, 1) * 0.6, "lowpass");
   }
 
-  explosion(): void {
-    this.burst(0.5, 380, 0.55, "lowpass");
+  wreck(size: number, loudness: number, pan: number): void {
+    const context = this.context;
+    if (!context || loudness <= 0.02) return;
+    const now = context.currentTime;
+    if (now - this.lastPop < POP_GAP) return;
+    this.lastPop = now;
+    const out = this.panned(pan);
+    if (!out) return;
+    const tune = 0.88 + Math.random() * 0.24;
+    this.drop(out, now, lerp(210, 120, size) * tune, 42, 0.16 + size * 0.16, (0.5 + size * 0.35) * loudness);
+    this.sweep(out, now, lerp(3000, 1800, size) * tune, 240, 0.2 + size * 0.28, (0.34 + size * 0.2) * loudness, false);
+    this.clatter(out, now + 0.1, 2 + Math.round(size * 2), 0.32, 0.09 * loudness);
+  }
+
+  explosion(power: number, loudness: number, pan: number): void {
+    const context = this.context;
+    if (!context || loudness <= 0.02) return;
+    const now = context.currentTime;
+    if (now - this.lastBlast < BLAST_GAP) return;
+    this.lastBlast = now;
+    const out = this.panned(pan);
+    if (!out) return;
+    const tune = 0.9 + Math.random() * 0.2;
+    const length = 0.9 + power * 0.5;
+    this.sweep(out, now, 7000, 1500, 0.07, 0.6 * loudness, true);
+    this.drop(out, now, 150 * tune, 27, length * 0.75, 1.1 * loudness);
+    this.sweep(out, now, 3600 * tune, 80, length, 0.95 * loudness, true);
+    this.sweep(out, now + 0.05, 190, 55, length * 1.9, 0.5 * loudness, false);
+    this.clatter(out, now + 0.2, 5, 0.7, 0.1 * loudness);
   }
 
   shot(): void {
@@ -145,5 +187,73 @@ export class GameAudio {
     source.connect(filter).connect(gain).connect(this.master);
     source.start(context.currentTime, Math.random());
     source.stop(context.currentTime + duration + 0.02);
+  }
+
+  private panned(pan: number): AudioNode | null {
+    const context = this.context;
+    if (!context || !this.impacts) return null;
+    const panner = context.createStereoPanner();
+    panner.pan.value = clamp(pan, -1, 1);
+    panner.connect(this.impacts);
+    return panner;
+  }
+
+  private drop(out: AudioNode, start: number, from: number, to: number, duration: number, volume: number): void {
+    const context = this.context;
+    if (!context) return;
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(from, start);
+    oscillator.frequency.exponentialRampToValueAtTime(to, start + duration);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(volume, start);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+    oscillator.connect(gain).connect(out);
+    oscillator.start(start);
+    oscillator.stop(start + duration + 0.02);
+  }
+
+  private sweep(out: AudioNode, start: number, from: number, to: number, duration: number, volume: number, crunch: boolean): void {
+    const context = this.context;
+    if (!context || !this.noise) return;
+    const source = context.createBufferSource();
+    source.buffer = this.noise;
+    source.loop = true;
+    const filter = context.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(from, start);
+    filter.frequency.exponentialRampToValueAtTime(to, start + duration);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(volume, start);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+    let tail: AudioNode = source.connect(filter);
+    if (crunch) {
+      const shaper = context.createWaveShaper();
+      shaper.curve = CRUNCH_CURVE;
+      tail = tail.connect(shaper);
+    }
+    tail.connect(gain).connect(out);
+    source.start(start, Math.random());
+    source.stop(start + duration + 0.02);
+  }
+
+  private clatter(out: AudioNode, start: number, count: number, spread: number, volume: number): void {
+    const context = this.context;
+    if (!context || !this.noise) return;
+    for (let i = 0; i < count; i++) {
+      const at = start + Math.random() * spread;
+      const source = context.createBufferSource();
+      source.buffer = this.noise;
+      const filter = context.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 1500 + Math.random() * 2600;
+      filter.Q.value = 9;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(volume * (0.5 + Math.random()) * 4, at);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.07);
+      source.connect(filter).connect(gain).connect(out);
+      source.start(at, Math.random());
+      source.stop(at + 0.09);
+    }
   }
 }

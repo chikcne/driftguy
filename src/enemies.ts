@@ -50,6 +50,8 @@ export interface Enemy {
   flinch: number;
   dustTimer: number;
   flank: number;
+  knockX: number;
+  knockZ: number;
 }
 
 export interface EnemyContext {
@@ -83,6 +85,8 @@ const DUST_INTERVAL = 0.3;
 const DUST_VISIBLE_RANGE = 75;
 const FLANK_DISTANCE = 16;
 const STIR_RATE = 1.6;
+const BLAST_KNOCK = 11;
+const KNOCK_FADE = 5;
 
 export class EnemySystem {
   readonly active: Enemy[] = [];
@@ -132,6 +136,8 @@ export class EnemySystem {
       flinch: 0,
       dustTimer: Math.random() * DUST_INTERVAL,
       flank: randSigned(1),
+      knockX: 0,
+      knockZ: 0,
     };
     this.active.push(enemy);
     return enemy;
@@ -142,9 +148,14 @@ export class EnemySystem {
       const reach = radius + enemy.spec.radius;
       const dx = enemy.x - x;
       const dz = enemy.z - z;
-      if (dx * dx + dz * dz > reach * reach) continue;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > reach * reach) continue;
       enemy.hp -= damage;
       enemy.flinch = 1;
+      const dist = Math.sqrt(distSq) || 1;
+      const knock = BLAST_KNOCK * (1 - (0.6 * dist) / reach);
+      enemy.knockX = (dx / dist) * knock;
+      enemy.knockZ = (dz / dist) * knock;
     }
   }
 
@@ -161,8 +172,11 @@ export class EnemySystem {
   update(ctx: EnemyContext): void {
     const { dt, car, stats, smoke } = ctx;
     const stir = Math.min(1, STIR_RATE * dt);
+    const knockFade = Math.exp(-KNOCK_FADE * dt);
     for (const enemy of this.active) {
       const spec = enemy.spec;
+      enemy.knockX *= knockFade;
+      enemy.knockZ *= knockFade;
       enemy.hitCooldown -= dt;
       enemy.ramCooldown -= dt;
       enemy.blindTimer -= dt;

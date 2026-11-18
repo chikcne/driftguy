@@ -32,5 +32,6 @@ pnpm dev -- --host <address>
 - `src/world.ts`, `src/terrain.ts`, `src/props.ts` — infinite chunked desert and its obstacles.
 - `src/loose.ts` — tumbling physics for plants knocked out of the ground. `pnpm plant-sim` prints what a hit costs the car.
 - `src/enemies.ts` — raider vehicles and the spawn director.
+- `src/gibs.ts` — the wreckage a dead raider bursts into: per-vehicle part lists and their bounce, roll and settle physics.
 - `src/upgrades.ts` — upgrade definitions and the stats derived from them.
 - `src/main.ts` — game loop and state.
