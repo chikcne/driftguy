@@ -7,10 +7,18 @@ import { buildProps, type PropDef, type PropName, type StackPart, TIRE_STACK, TI
 import { type RootOutcome, type Strain, strain, sway, writeLean } from "./roots";
 import { CELL_SIZE, CHUNK_CELLS, CHUNK_SIZE, groundHeight, vertexHeight } from "./terrain";
 
+interface BreakableBarrel {
+  id: string;
+  list: number[];
+  offset: number;
+  destroyed: boolean;
+}
+
 export interface Collider {
   x: number;
   z: number;
   r: number;
+  barrel?: BreakableBarrel;
 }
 
 export interface Contact {
@@ -124,6 +132,7 @@ export class World {
   private readonly colliderGrid = new Map<number, Collider[]>();
   private readonly rootedGrid = new Map<number, Rooted[]>();
   private readonly uprooted = new Set<number>();
+  private readonly brokenBarrels = new Set<string>();
   private readonly loose = new LooseSystem<PropName>();
   private readonly looseBatches = new Map<PropName, LooseBatch>();
   private readonly swaying: Rooted[] = [];
@@ -164,6 +173,7 @@ export class World {
   reset(): void {
     this.loose.clear();
     this.uprooted.clear();
+    this.brokenBarrels.clear();
     this.swaying.length = 0;
     for (const chunk of this.chunks.values()) chunk.ground.dispose();
     this.chunks.clear();
@@ -255,6 +265,26 @@ export class World {
     this.rebuildColliderGrid();
   }
 
+  breakBarrels(x: number, z: number, radius: number, onBreak: (x: number, z: number) => void): boolean {
+    let hit = false;
+    for (let gz = Math.floor((z - radius) / COLLIDER_CELL); gz <= Math.floor((z + radius) / COLLIDER_CELL); gz++) {
+      for (let gx = Math.floor((x - radius) / COLLIDER_CELL); gx <= Math.floor((x + radius) / COLLIDER_CELL); gx++) {
+        for (const collider of this.colliderGrid.get(cellKey(gx, gz)) ?? []) {
+          const barrel = collider.barrel;
+          if (!barrel || barrel.destroyed) continue;
+          if (Math.hypot(x - collider.x, z - collider.z) > radius + collider.r) continue;
+          barrel.destroyed = true;
+          this.brokenBarrels.add(barrel.id);
+          barrel.list.fill(0, barrel.offset, barrel.offset + 16);
+          onBreak(collider.x, collider.z);
+          hit = true;
+        }
+      }
+    }
+    if (hit) this.rebuildInstancesOf("barrel");
+    return hit;
+  }
+
   resolve(body: { x: number; z: number }, radius: number, contact: Contact): Contact {
     contact.hit = false;
     const minX = Math.floor((body.x - radius) / COLLIDER_CELL);
@@ -266,6 +296,7 @@ export class World {
         const bucket = this.colliderGrid.get(cellKey(gx, gz));
         if (!bucket) continue;
         for (const collider of bucket) {
+          if (collider.barrel?.destroyed) continue;
           const dx = body.x - collider.x;
           const dz = body.z - collider.z;
           const reach = radius + collider.r;
@@ -366,6 +397,15 @@ export class World {
       const footprint = prop.colliders.reduce((reach, c) => Math.max(reach, Math.hypot(c.x, c.z) + c.r), 0) * scale;
       if (!this.fits(chunk, x, z, footprint)) return false;
     }
+    let list = chunk.placements.get(name);
+    if (!list) {
+      list = [];
+      chunk.placements.set(name, list);
+    }
+    const barrelId = `${chunk.cx}:${chunk.cz}:${list.length}`;
+    const barrel: BreakableBarrel | undefined = name === "barrel"
+      ? { id: barrelId, list, offset: list.length, destroyed: this.brokenBarrels.has(barrelId) }
+      : undefined;
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
     for (const local of prop.loose ? [] : prop.colliders) {
@@ -373,12 +413,8 @@ export class World {
         x: x + (local.x * cos + local.z * sin) * scale,
         z: z + (-local.x * sin + local.z * cos) * scale,
         r: local.r * scale,
+        barrel,
       });
-    }
-    let list = chunk.placements.get(name);
-    if (!list) {
-      list = [];
-      chunk.placements.set(name, list);
     }
     const squash = stack ? 1 : lerp(0.85, 1.15, rng());
     const y = (stack?.y ?? groundHeight(x, z)) - prop.sink * scale;
@@ -414,6 +450,7 @@ export class World {
       if (!alive) return true;
     }
     writeTransform(list, list.length, x, y, z, yaw, 0, 0, scale, scale * squash, scale);
+    if (barrel?.destroyed) list.fill(0, barrel.offset, barrel.offset + 16);
     return true;
   }
 

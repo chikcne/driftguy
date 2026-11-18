@@ -41,6 +41,7 @@ export type PropName =
   | "shrub";
 
 const HALF_PI = Math.PI / 2;
+const BARREL_SCALE = Math.cbrt(3);
 const TIRE_DIAMETER = 1.1;
 const TIRE_HEIGHT = 0.36;
 const TIRE_TREAD_POINTS = 8;
@@ -288,7 +289,7 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
       ]),
       { hold: 10, tear: 5 },
     ),
-    barrel: def(barrel, solid(0.45), 1, 1.1),
+    barrel: def(barrel, solid(0.45), BARREL_SCALE, 1.1 * BARREL_SCALE),
     ribs: def(ribs, [], 0.9, 1.6, true, 0.3),
     pylon: def(pylon, solid(0.35), 1, 1.2),
     pebble: def(pebble, [], 0.5, 1.6, false, 0),

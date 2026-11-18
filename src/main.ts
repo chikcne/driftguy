@@ -12,7 +12,7 @@ import {
   Vector3,
 } from "@babylonjs/core";
 import { GameAudio } from "./audio";
-import { GunSystem, type PickupKind, PickupSystem, REPAIR_CRATE_VALUE, REPAIR_DROP_VALUE } from "./combat";
+import { BARREL_SCRAP_PIECES, SCRAP_XP_MULTIPLIER, GunSystem, type PickupKind, PickupSystem, REPAIR_CRATE_VALUE, REPAIR_DROP_VALUE } from "./combat";
 import { BlastPool, EXHAUST_HALF_SPAN, EXHAUST_HEIGHT, EXHAUST_REAR, ExhaustFlames, ShockRings, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
 import { GibSystem } from "./gibs";
@@ -411,7 +411,7 @@ class Game {
       onKill: (enemy) => this.onEnemyKilled(enemy),
     });
     this.world.step(dt, this.car.x, this.car.z);
-    this.gun.update(dt, this.car, this.stats, this.enemies, this.audio);
+    this.gun.update(dt, this.car, this.stats, this.enemies, this.audio, this.hitBarrels);
     this.enemies.sweepDead(
       (enemy) => this.onEnemyWrecked(enemy),
       (enemy) => this.onEnemyKilled(enemy),
@@ -540,6 +540,7 @@ class Game {
 
   private collideCarWithWorld(): void {
     const car = this.car;
+    this.hitBarrels(car.x, car.z, CAR_RADIUS);
     this.ploughThroughPlants();
     if (!this.world.resolve(car, CAR_RADIUS, this.contact).hit) return;
     const into = car.vx * this.contact.nx + car.vz * this.contact.nz;
@@ -796,6 +797,7 @@ class Game {
   }
 
   private detonate(x: number, z: number, radius: number, damage: number): void {
+    this.hitBarrels(x, z, radius);
     this.fireball(x, z, radius);
     this.enemies.hurtArea(x, z, radius, damage);
   }
@@ -831,9 +833,16 @@ class Game {
     this.pickups.place("repair", spot.x, spot.z, REPAIR_CRATE_VALUE);
   }
 
+  private readonly hitBarrels = (x: number, z: number, radius: number): boolean =>
+    this.world.breakBarrels(x, z, radius, (bx, bz) => {
+      this.pickups.drop("scrap", bx, bz, BARREL_SCRAP_PIECES, 1);
+      this.gibs.sparks(bx, groundHeight(bx, bz) + 0.7, bz, 8, 12, 0, 0);
+      this.audio.thud(0.4);
+    });
+
   private collect(kind: PickupKind, value: number): void {
     if (kind === "scrap") {
-      this.scrap += value;
+      this.scrap += value * SCRAP_XP_MULTIPLIER;
       this.audio.pickup(Math.min(8, value));
     } else {
       this.hp = Math.min(this.stats.maxHp, this.hp + value);

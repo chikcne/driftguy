@@ -50,7 +50,7 @@ export class GunSystem {
     this.turretAngle = 0;
   }
 
-  update(dt: number, car: CarBody, stats: Stats, enemies: EnemySystem, audio: GameAudio): void {
+  update(dt: number, car: CarBody, stats: Stats, enemies: EnemySystem, audio: GameAudio, hitBarrels?: (x: number, z: number, radius: number) => boolean): void {
     if (stats.gunBarrels > 0) {
       const interval = 1 / stats.gunFireRate;
       this.cooldown = Math.min(this.cooldown - dt, interval);
@@ -85,6 +85,7 @@ export class GunSystem {
       bullet.x += bullet.vx * dt;
       bullet.z += bullet.vz * dt;
       let spent = bullet.life <= 0;
+      if (!spent) spent = hitBarrels?.(bullet.x, bullet.z, BULLET_RADIUS) ?? false;
       if (!spent) {
         for (const enemy of enemies.active) {
           const reach = enemy.spec.radius + BULLET_RADIUS;
@@ -134,6 +135,9 @@ const MAGNET_ACCEL = 90;
 const MAGNET_TOP_SPEED = 55;
 const SCATTER_FRICTION = 3.5;
 const HOVER_HEIGHT = 0.7;
+const SCRAP_RENDER_SCALE = 1.5;
+export const SCRAP_XP_MULTIPLIER = 3;
+export const BARREL_SCRAP_PIECES = 4;
 
 export class PickupSystem {
   private readonly items: Pickup[] = [];
@@ -225,7 +229,7 @@ export class PickupSystem {
       const y = groundHeight(item.x, item.z) + HOVER_HEIGHT + Math.sin(time * 3 + item.phase) * 0.15;
       const spin = time * 2.4 + item.phase;
       if (item.kind === "scrap") {
-        const size = item.value >= 5 ? 1.5 : item.value >= 2 ? 1.15 : 0.9;
+        const size = (item.value >= 5 ? 1.5 : item.value >= 2 ? 1.15 : 0.9) * SCRAP_RENDER_SCALE;
         this.scrapBatch.push(item.x, y, item.z, spin, 0.4, 0, size, size, size);
       } else {
         const size = item.value > REPAIR_DROP_VALUE ? 2 : 1.2;
