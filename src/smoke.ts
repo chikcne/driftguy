@@ -137,6 +137,10 @@ export class SmokeSystem {
     this.volume.revealInside(meshes);
   }
 
+  hideGhostsBehind(meshes: Mesh[]): void {
+    this.volume.hideGhostsBehind(meshes);
+  }
+
   emit(
     kind: PuffKind,
     x: number,

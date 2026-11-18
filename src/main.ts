@@ -176,6 +176,7 @@ class Game {
     this.tracks = new SkidTracks(this.scene, 4);
 
     this.carModel = buildPlayerCar(this.scene);
+    this.smoke.hideGhostsBehind(this.carModel.shadowCasters);
     for (const mesh of this.carModel.shadowCasters) {
       mesh.material = flat;
       mesh.receiveShadows = true;

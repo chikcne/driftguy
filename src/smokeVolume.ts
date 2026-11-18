@@ -115,6 +115,7 @@ const RIM_STRENGTH = 0.4;
 const GHOST_SHADE = 0.52;
 const GHOST_LIFT = 0.3;
 const GHOST_DEPTH_SLACK = 0.5;
+const GHOST_VEIL = new Color4(0.5, 0.48, 0.53, 0.7);
 const GROUND_SHADOW = 0.34;
 const GROUND_SHADOW_LEVEL = 0.3;
 const PUFFS_PER_REBUILD_STEP = 700;
@@ -248,7 +249,6 @@ const float RIM_START = ${RIM_START.toFixed(3)};
 const float RIM_STRENGTH = ${RIM_STRENGTH.toFixed(3)};
 const float GHOST_SHADE = ${GHOST_SHADE.toFixed(3)};
 const float GHOST_LIFT = ${GHOST_LIFT.toFixed(3)};
-const float GHOST_DEPTH_SLACK = ${GHOST_DEPTH_SLACK.toFixed(3)};
 const float GROUND_SHADOW = ${GROUND_SHADOW.toFixed(3)};
 const float GROUND_SHADOW_LEVEL = ${GROUND_SHADOW_LEVEL.toFixed(3)};
 
@@ -383,7 +383,7 @@ void main() {
       color *= 1.0 - crease * CREASE_SHADE;
       color = mix(color, rimColor, rim * (1.0 - 0.5 * lit));
       float ghostZ = texture2D(ghostMap, screenUv).r;
-      if (ghostZ > 0.0 && ghostZ <= sceneZ + GHOST_DEPTH_SLACK && ghostZ / ahead > tSurface) {
+      if (ghostZ > 0.0 && ghostZ / ahead > tSurface) {
         float pale = smoothstep(0.25, 0.4, dot(tint.rgb, vec3(0.3, 0.6, 0.1)));
         color = mix(mix(tint.rgb, vec3(1.0), GHOST_LIFT), tint.rgb * GHOST_SHADE, pale);
       }
@@ -427,9 +427,32 @@ void main() {
 
 Effect.ShadersStore["smokeGhostFragmentShader"] = `
 precision highp float;
+uniform float shown;
 varying float vDepth;
 void main() {
-  gl_FragColor = vec4(vDepth, 0.0, 0.0, 1.0);
+  gl_FragColor = vec4(vDepth * shown, 0.0, 0.0, 1.0);
+}`;
+
+Effect.ShadersStore["smokeGhostVeilVertexShader"] = `
+precision highp float;
+attribute vec3 position;
+void main() {
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}`;
+
+Effect.ShadersStore["smokeGhostVeilFragmentShader"] = `
+precision highp float;
+uniform sampler2D depthMap;
+uniform sampler2D ghostMap;
+uniform vec2 screenSize;
+uniform vec4 veil;
+void main() {
+  vec2 screenUv = gl_FragCoord.xy / screenSize;
+  float ghostZ = texture2D(ghostMap, screenUv).r;
+  if (ghostZ <= 0.0) discard;
+  float sceneZ = texture2D(depthMap, screenUv).r;
+  if (sceneZ <= 0.0 || ghostZ <= sceneZ + ${GHOST_DEPTH_SLACK.toFixed(3)}) discard;
+  gl_FragColor = vec4(pow(veil.rgb, vec3(2.2)), veil.a);
 }`;
 
 class DensityGrid {
@@ -568,6 +591,7 @@ export class SmokeVolume {
   private readonly tintTexture: RawTexture3D;
   private readonly material: ShaderMaterial;
   private readonly ghostMaterial: ShaderMaterial;
+  private readonly blockerMaterial: ShaderMaterial;
   private readonly ghostTarget: RenderTargetTexture;
   private readonly mesh: Mesh;
   private readonly origin = new Vector3();
@@ -648,12 +672,18 @@ export class SmokeVolume {
     this.material.setTexture("noiseTex", noise);
     this.material.setTexture("depthMap", depthRenderer.getDepthMap());
 
-    this.ghostMaterial = new ShaderMaterial(
-      "smokeGhost",
-      scene,
-      { vertex: "smokeGhost", fragment: "smokeGhost" },
-      { attributes: ["position"], uniforms: ["world", "view", "viewProjection"] },
-    );
+    const depthWriter = (name: string, shown: number): ShaderMaterial => {
+      const writer = new ShaderMaterial(
+        name,
+        scene,
+        { vertex: "smokeGhost", fragment: "smokeGhost" },
+        { attributes: ["position"], uniforms: ["world", "view", "viewProjection", "shown"] },
+      );
+      writer.setFloat("shown", shown);
+      return writer;
+    };
+    this.ghostMaterial = depthWriter("smokeGhost", 1);
+    this.blockerMaterial = depthWriter("smokeGhostBlocker", 0);
     this.ghostTarget = new RenderTargetTexture(
       "smokeGhost",
       { ratio: 1 },
@@ -673,6 +703,27 @@ export class SmokeVolume {
     this.ghostTarget.renderList = [];
     scene.customRenderTargets.push(this.ghostTarget);
     this.material.setTexture("ghostMap", this.ghostTarget);
+
+    const veilMaterial = new ShaderMaterial(
+      "smokeGhostVeil",
+      scene,
+      { vertex: "smokeGhostVeil", fragment: "smokeGhostVeil" },
+      { attributes: ["position"], uniforms: ["screenSize", "veil"], samplers: ["depthMap", "ghostMap"], needAlphaBlending: true },
+    );
+    veilMaterial.backFaceCulling = false;
+    veilMaterial.disableDepthWrite = true;
+    veilMaterial.depthFunction = Constants.ALWAYS;
+    veilMaterial.setTexture("depthMap", depthRenderer.getDepthMap());
+    veilMaterial.setTexture("ghostMap", this.ghostTarget);
+    veilMaterial.setColor4("veil", GHOST_VEIL);
+    veilMaterial.onBindObservable.add(() => {
+      veilMaterial.getEffect()?.setVector2("screenSize", this.screenSize.set(scene.getEngine().getRenderWidth(), scene.getEngine().getRenderHeight()));
+    });
+    const veil = MeshBuilder.CreatePlane("smokeGhostVeil", { size: 2 }, scene);
+    veil.material = veilMaterial;
+    veil.isPickable = false;
+    veil.alwaysSelectAsActiveMesh = true;
+    veil.alphaIndex = 5;
     this.material.setColor3("fogColor", fogColor);
     this.material.setColor3("shadeTint", new Color3(0.74, 0.69, 0.75));
     this.material.setColor3("rimColor", new Color3(1, 0.93, 0.84));
@@ -703,6 +754,11 @@ export class SmokeVolume {
   revealInside(meshes: Mesh[]): void {
     for (const mesh of meshes) this.ghostTarget.renderList?.push(mesh);
     this.ghostTarget.setMaterialForRendering(meshes, this.ghostMaterial);
+  }
+
+  hideGhostsBehind(meshes: Mesh[]): void {
+    for (const mesh of meshes) this.ghostTarget.renderList?.push(mesh);
+    this.ghostTarget.setMaterialForRendering(meshes, this.blockerMaterial);
   }
 
   update(field: PuffField, view: VolumeView, dt: number): void {
