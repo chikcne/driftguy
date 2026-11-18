@@ -28,7 +28,8 @@ interface Bullet {
 }
 
 export class GunSystem {
-  angle = 0;
+  turretAngle = 0;
+  private shotAngle = 0;
   private readonly bullets: Bullet[] = [];
   private readonly batch: InstanceBatch;
   private cooldown = 0;
@@ -45,18 +46,21 @@ export class GunSystem {
   clear(): void {
     this.bullets.length = 0;
     this.cooldown = 0;
+    this.shotAngle = 0;
+    this.turretAngle = 0;
   }
 
   update(dt: number, car: CarBody, stats: Stats, enemies: EnemySystem, audio: GameAudio): void {
     if (stats.gunBarrels > 0) {
-      this.cooldown -= dt;
+      const interval = 1 / stats.gunFireRate;
+      this.cooldown = Math.min(this.cooldown - dt, interval);
       while (this.cooldown <= 0) {
-        this.cooldown += 1 / stats.gunFireRate;
-        this.angle = (this.angle + SPIRAL_STEP) % TAU;
+        this.cooldown += interval;
+        this.shotAngle = (this.shotAngle + SPIRAL_STEP) % TAU;
         const baseHeight = groundHeight(car.x, car.z) + MUZZLE_HEIGHT;
         for (let barrel = 0; barrel < stats.gunBarrels; barrel++) {
           if (this.bullets.length >= MAX_BULLETS) break;
-          const direction = this.angle + (barrel * TAU) / stats.gunBarrels;
+          const direction = this.shotAngle + (barrel * TAU) / stats.gunBarrels;
           const dx = Math.sin(direction);
           const dz = Math.cos(direction);
           this.bullets.push({
@@ -71,6 +75,8 @@ export class GunSystem {
         }
         audio.shot();
       }
+      const progress = 1 - this.cooldown / interval;
+      this.turretAngle = this.shotAngle + SPIRAL_STEP * progress;
     }
 
     for (let i = this.bullets.length - 1; i >= 0; i--) {

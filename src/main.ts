@@ -849,7 +849,7 @@ class Game {
     model.wheels[2].rotation.x += rearSpin;
     model.wheels[3].rotation.x += rearSpin;
 
-    model.gun.rotation.y = this.gun.angle - car.heading;
+    model.gun.rotation.y = this.gun.turretAngle - car.heading;
     model.fan.rotation.z += 26 * dt;
     this.flames.update(this.nitroLevel, this.clock);
   }
