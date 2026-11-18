@@ -54,6 +54,7 @@ const WALL_BOUNCE = 0.3;
 const PLANT_TWIST = 0.35;
 const PLANT_TWIST_LIMIT = 1.6;
 const PLANT_THUD_IMPULSE = 1.2;
+const ROOT_SOIL_PUFFS = 7;
 const SMOKE_PUFFS_PER_SECOND = 22;
 const SMOKE_LIFE_SECONDS = 5.5;
 const SMOKE_GROWTH = 1.25;
@@ -128,7 +129,7 @@ class Game {
   private readonly car = new CarBody();
   private readonly controls: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: 0 };
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
-  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
+  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0, torn: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
   private readonly cameraTarget = new Vector3();
   private readonly cameraForward = new Vector3();
@@ -561,6 +562,7 @@ class Game {
     const dirZ = speed > 0.01 ? car.vz / speed : 0;
     const impulse = this.world.shove(car, CAR_RADIUS, 1, this.shove).impulse;
     if (impulse <= 0) return;
+    if (this.shove.torn > 0) this.burstSoil(this.shove.x, this.shove.z, dirX * speed, dirZ * speed);
     const offX = this.shove.x - car.x;
     const offZ = this.shove.z - car.z;
     const twist = (offX * dirZ - offZ * dirX) * impulse * PLANT_TWIST;
@@ -570,6 +572,27 @@ class Game {
       this.audio.thud(impulse / 10);
       this.input.rumble(saturate(impulse / 8), 0.2, 120);
     }
+  }
+
+  private burstSoil(x: number, z: number, vx: number, vz: number): void {
+    const ground = groundHeight(x, z);
+    for (let i = 0; i < ROOT_SOIL_PUFFS; i++) {
+      this.smoke.emit(
+        PUFF.dust,
+        x + randSigned(0.6),
+        ground + randRange(0.1, 0.5),
+        z + randSigned(0.6),
+        vx * 0.3 + randSigned(3),
+        randRange(1.5, 4.5),
+        vz * 0.3 + randSigned(3),
+        randRange(0.5, 0.9),
+        1.1,
+        randRange(0.9, 1.6),
+        0.6,
+        0.2,
+      );
+    }
+    this.audio.crunch(0.7, 0.8, 0);
   }
 
   private wheelPosition(index: number, out: { x: number; z: number }): void {

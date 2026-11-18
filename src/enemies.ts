@@ -155,7 +155,7 @@ export class EnemySystem {
   private readonly sample = createSmokeSample();
   private harmDealt = 0;
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
-  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
+  private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0, torn: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
 
   constructor(scene: Scene, material: Material, shadows: ShadowGenerator) {

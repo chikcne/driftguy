@@ -1,7 +1,8 @@
-import { Mesh, Scene } from "@babylonjs/core";
+import { Color3, Mesh, Quaternion, Scene, Vector3 } from "@babylonjs/core";
 import { ModelKit } from "./kit";
 import type { LoosePoint, LooseSpec } from "./loose";
 import { PALETTE as P } from "./palette";
+import type { RootSpec } from "./roots";
 
 export interface LocalCollider {
   x: number;
@@ -18,6 +19,7 @@ export interface PropDef {
   maxScale: number;
   sink: number;
   loose?: LooseSpec;
+  roots?: RootSpec;
 }
 
 export type PropName =
@@ -77,6 +79,31 @@ function tread(mass: number, diameter: number, height: number): LooseSpec {
     points.push([Math.sin(angle) * ring, half, Math.cos(angle) * ring, half]);
   }
   return { mass, radius: diameter / 2, centre: half, points };
+}
+
+interface RootShape {
+  count: number;
+  length: number;
+  girth: number;
+  splay: number;
+  tap: number;
+  clod: number;
+}
+
+function sinkRoots(kit: ModelKit, shape: RootShape, color: Color3): ModelKit {
+  const turn = new Quaternion();
+  const reach = new Vector3();
+  for (let i = 0; i < shape.count; i++) {
+    const yaw = ((i + 0.5) / shape.count) * Math.PI * 2;
+    const length = shape.length * (0.85 + 0.3 * ((i * 7) % shape.count) / shape.count);
+    Quaternion.RotationYawPitchRollToRef(yaw, 0, shape.splay, turn);
+    Vector3.Down().rotateByQuaternionToRef(turn, reach);
+    reach.scaleInPlace(length / 2);
+    kit.cylinder({ top: shape.girth, bottom: shape.girth * 0.25, height: length, sides: 5 }, [reach.x, reach.y + 0.05, reach.z], color, [0, yaw, shape.splay]);
+  }
+  kit.cylinder({ top: shape.girth * 1.6, bottom: shape.girth * 0.3, height: shape.tap, sides: 5 }, [0, -shape.tap / 2, 0], color);
+  kit.blob({ radius: shape.clod, scale: [1, 0.6, 1], roughness: 0.3, seed: 17 }, [0, -shape.clod * 0.8, 0], P.sandShadow);
+  return kit;
 }
 
 function tuft(mass: number, height: number, radius: number): LooseSpec {
@@ -151,7 +178,7 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     .box([1.2, 0.5, 0.9], [1.4, 0.25, 0.9], P.concreteDark, [0, 0.5, 0])
     .build("wall");
 
-  const cactus = kit
+  const cactus = sinkRoots(kit, { count: 5, length: 1, girth: 0.2, splay: 1, tap: 0.7, clod: 0.45 }, P.root)
     .cylinder({ top: 0.42, bottom: 0.5, height: 3.2, sides: 6 }, [0, 1.6, 0], P.cactus)
     .cylinder({ top: 0.3, bottom: 0.3, height: 0.9, sides: 6 }, [0.55, 1.5, 0], P.cactusDark, [0, 0, HALF_PI])
     .cylinder({ top: 0.26, bottom: 0.3, height: 1.2, sides: 6 }, [0.95, 2.0, 0], P.cactus)
@@ -159,7 +186,7 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     .cylinder({ top: 0.24, bottom: 0.28, height: 0.9, sides: 6 }, [-0.75, 2.4, 0], P.cactus)
     .build("cactus");
 
-  const deadTree = kit
+  const deadTree = sinkRoots(kit, { count: 4, length: 1.1, girth: 0.26, splay: 0.8, tap: 0.9, clod: 0.42 }, P.deadWood)
     .cylinder({ top: 0.2, bottom: 0.42, height: 3.4, sides: 5 }, [0, 1.7, 0], P.deadWood, [0, 0, 0.08])
     .cylinder({ top: 0.08, bottom: 0.18, height: 1.8, sides: 5 }, [0.55, 3.0, 0], P.deadWood, [0, 0, -0.8])
     .cylinder({ top: 0.07, bottom: 0.16, height: 1.5, sides: 5 }, [-0.55, 3.4, 0.2], P.deadWood, [0.3, 0, 0.9])
@@ -210,7 +237,8 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
     castsShadow = true,
     sink = 0.1,
     loose?: LooseSpec,
-  ): PropDef => ({ name: mesh.name, mesh, colliders, castsShadow, minScale, maxScale, sink, loose });
+    roots?: RootSpec,
+  ): PropDef => ({ name: mesh.name, mesh, colliders, castsShadow, minScale, maxScale, sink, loose, roots });
 
   return {
     rockA: def(rockA, solid(0.95), 1.2, 3.6, true, 0.25),
@@ -239,9 +267,11 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
       true,
       0.1,
       stalk(0.2, 3.2, 0.45, [
+        [0, -0.3, 0, 0.4],
         [0.95, 2.4, 0, 0.3],
         [-0.75, 2.65, 0, 0.28],
       ]),
+      { hold: 9, tear: 4.5 },
     ),
     deadTree: def(
       deadTree,
@@ -251,10 +281,12 @@ export function buildProps(scene: Scene): Record<PropName, PropDef> {
       true,
       0.1,
       stalk(0.15, 3.4, 0.32, [
+        [0, -0.3, 0, 0.38],
         [1.15, 3.55, 0, 0.14],
         [-1.1, 3.85, 0.3, 0.14],
         [0, 4.2, -0.8, 0.14],
       ]),
+      { hold: 10, tear: 5 },
     ),
     barrel: def(barrel, solid(0.45), 1, 1.1),
     ribs: def(ribs, [], 0.9, 1.6, true, 0.3),

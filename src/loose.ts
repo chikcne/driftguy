@@ -21,6 +21,7 @@ export interface Shove {
   impulse: number;
   x: number;
   z: number;
+  torn: number;
 }
 
 export interface Obstruction {
@@ -103,6 +104,41 @@ function punch(body: LooseBody<unknown>, rx: number, ry: number, rz: number, jx:
   body.wz += (rx * jy - ry * jx) / body.inertia;
 }
 
+export function writePose(
+  target: Float32Array,
+  o: number,
+  x: number,
+  y: number,
+  z: number,
+  qx: number,
+  qy: number,
+  qz: number,
+  qw: number,
+  scale: number,
+  scaleY: number,
+  origin: number,
+): void {
+  const xy = 2 * (qx * qy - qz * qw);
+  const yy = 1 - 2 * (qx * qx + qz * qz);
+  const zy = 2 * (qy * qz + qx * qw);
+  target[o] = (1 - 2 * (qy * qy + qz * qz)) * scale;
+  target[o + 1] = 2 * (qx * qy + qz * qw) * scale;
+  target[o + 2] = 2 * (qx * qz - qy * qw) * scale;
+  target[o + 3] = 0;
+  target[o + 4] = xy * scaleY;
+  target[o + 5] = yy * scaleY;
+  target[o + 6] = zy * scaleY;
+  target[o + 7] = 0;
+  target[o + 8] = 2 * (qx * qz + qy * qw) * scale;
+  target[o + 9] = 2 * (qy * qz - qx * qw) * scale;
+  target[o + 10] = (1 - 2 * (qx * qx + qy * qy)) * scale;
+  target[o + 11] = 0;
+  target[o + 12] = x - xy * origin;
+  target[o + 13] = y - yy * origin;
+  target[o + 14] = z - zy * origin;
+  target[o + 15] = 1;
+}
+
 export class LooseSystem<Kind> {
   readonly bodies: LooseBody<Kind>[] = [];
   private readonly obstruction: Obstruction = { hit: false, nx: 0, nz: 0 };
@@ -164,6 +200,7 @@ export class LooseSystem<Kind> {
     out.impulse = 0;
     out.x = 0;
     out.z = 0;
+    out.torn = 0;
     let ceiling = Number.NaN;
     for (const body of this.bodies) {
       const span = radius + body.reach;
@@ -250,24 +287,7 @@ export class LooseSystem<Kind> {
     let count = 0;
     for (const body of this.bodies) {
       if (body.kind !== kind) continue;
-      orient(body);
-      const o = count * 16;
-      target[o] = basis[0] * body.scale;
-      target[o + 1] = basis[3] * body.scale;
-      target[o + 2] = basis[6] * body.scale;
-      target[o + 3] = 0;
-      target[o + 4] = basis[1] * body.scaleY;
-      target[o + 5] = basis[4] * body.scaleY;
-      target[o + 6] = basis[7] * body.scaleY;
-      target[o + 7] = 0;
-      target[o + 8] = basis[2] * body.scale;
-      target[o + 9] = basis[5] * body.scale;
-      target[o + 10] = basis[8] * body.scale;
-      target[o + 11] = 0;
-      target[o + 12] = body.x - basis[1] * body.origin;
-      target[o + 13] = body.y - basis[4] * body.origin;
-      target[o + 14] = body.z - basis[7] * body.origin;
-      target[o + 15] = 1;
+      writePose(target, count * 16, body.x, body.y, body.z, body.qx, body.qy, body.qz, body.qw, body.scale, body.scaleY, body.origin);
       count++;
     }
     return count;

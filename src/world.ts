@@ -4,6 +4,7 @@ import { LooseSystem, type Mover, type Obstruction, type Shove } from "./loose";
 import { hash2, lerp, type Rng, saturate, seededRng, TAU } from "./math";
 import { PALETTE } from "./palette";
 import { buildProps, type PropDef, type PropName, type StackPart, TIRE_STACK, TIRE_STACK_FOOTPRINT } from "./props";
+import { type RootOutcome, type Strain, strain, sway, writeLean } from "./roots";
 import { CELL_SIZE, CHUNK_CELLS, CHUNK_SIZE, groundHeight, vertexHeight } from "./terrain";
 
 export interface Collider {
@@ -33,6 +34,14 @@ interface Rooted {
   list: number[];
   offset: number;
   group: Rooted[] | null;
+  chunk: Chunk;
+  pose: number[] | null;
+  hold: number;
+  tear: number;
+  leanX: number;
+  leanZ: number;
+  swayX: number;
+  swayZ: number;
 }
 
 interface StackPlacement {
@@ -66,6 +75,7 @@ const OUTPOST_CHANCE = 0.16;
 const PLACEMENT_ATTEMPTS = 5;
 const ROOTED_ID_STRIDE = 256;
 const LOOSE_CAPACITY = 64;
+const SWAY_CAPACITY = 8;
 
 const STACK_MIN_SCALE = 1;
 const STACK_MAX_SCALE = 1.2;
@@ -116,6 +126,8 @@ export class World {
   private readonly uprooted = new Set<number>();
   private readonly loose = new LooseSystem<PropName>();
   private readonly looseBatches = new Map<PropName, LooseBatch>();
+  private readonly swaying: Rooted[] = [];
+  private readonly strain: Strain = { impulse: 0, x: 0, z: 0 };
   private readonly obstacles = (spot: { x: number; z: number }, radius: number, out: Obstruction): Obstruction => this.resolve(spot, radius, out);
   private centerX = Number.NaN;
   private centerZ = Number.NaN;
@@ -152,6 +164,7 @@ export class World {
   reset(): void {
     this.loose.clear();
     this.uprooted.clear();
+    this.swaying.length = 0;
     for (const chunk of this.chunks.values()) chunk.ground.dispose();
     this.chunks.clear();
     this.centerX = Number.NaN;
@@ -161,6 +174,10 @@ export class World {
 
   step(dt: number, x: number, z: number): void {
     this.loose.step(dt, x, z, this.obstacles);
+    for (let i = this.swaying.length - 1; i >= 0; i--) {
+      const plant = this.swaying[i];
+      if (!sway(plant, dt)) this.settle(plant);
+    }
     this.renderLoose();
   }
 
@@ -169,6 +186,10 @@ export class World {
     const maxX = Math.floor((mover.x + radius) / COLLIDER_CELL);
     const minZ = Math.floor((mover.z - radius) / COLLIDER_CELL);
     const maxZ = Math.floor((mover.z + radius) / COLLIDER_CELL);
+    let torn = 0;
+    let grip = 0;
+    let gripX = 0;
+    let gripZ = 0;
     for (let gz = minZ; gz <= maxZ; gz++) {
       for (let gx = minX; gx <= maxX; gx++) {
         const bucket = this.rootedGrid.get(cellKey(gx, gz));
@@ -178,11 +199,32 @@ export class World {
           const reach = radius + plant.r;
           const dx = plant.x - mover.x;
           const dz = plant.z - mover.z;
-          if (dx * dx + dz * dz < reach * reach) this.uproot(plant);
+          if (dx * dx + dz * dz >= reach * reach) continue;
+          if (plant.hold > 0) {
+            const outcome: RootOutcome = strain(plant, mover, radius, mass, this.strain);
+            grip += this.strain.impulse;
+            gripX += this.strain.x * this.strain.impulse;
+            gripZ += this.strain.z * this.strain.impulse;
+            if (outcome !== "torn") {
+              if (this.strain.impulse > 0) this.bend(plant);
+              continue;
+            }
+            torn++;
+          }
+          this.uproot(plant);
         }
       }
     }
-    return this.loose.shove(mover, radius, mass, out);
+    this.loose.shove(mover, radius, mass, out);
+    out.torn = torn;
+    if (grip > 0) {
+      const total = out.impulse + grip;
+      out.x = (out.x * out.impulse + gripX) / total;
+      out.z = (out.z * out.impulse + gripZ) / total;
+      out.impulse = total;
+      out.hit = true;
+    }
+    return out;
   }
 
   update(x: number, z: number): void {
@@ -204,6 +246,10 @@ export class World {
       if (wanted.has(key)) continue;
       chunk.ground.dispose();
       this.chunks.delete(key);
+    }
+    for (let i = this.swaying.length - 1; i >= 0; i--) {
+      const home = this.swaying[i].chunk;
+      if (this.chunks.get(cellKey(home.cx, home.cz)) !== home) this.swaying.splice(i, 1);
     }
     this.rebuildInstances();
     this.rebuildColliderGrid();
@@ -354,6 +400,14 @@ export class World {
         list,
         offset: list.length,
         group: stack?.group ?? null,
+        chunk,
+        pose: null,
+        hold: stack || !prop.roots ? 0 : prop.roots.hold * scale * scale,
+        tear: stack || !prop.roots ? 0 : prop.roots.tear * scale * scale,
+        leanX: 0,
+        leanZ: 0,
+        swayX: 0,
+        swayZ: 0,
       };
       chunk.rooted.push(rooted);
       stack?.group.push(rooted);
@@ -371,6 +425,10 @@ export class World {
       if (!spec || !member.alive) continue;
       member.alive = false;
       this.uprooted.add(member.id);
+      if (member.pose) {
+        member.pose = null;
+        this.swaying.splice(this.swaying.indexOf(member), 1);
+      }
       member.list.fill(0, member.offset, member.offset + 16);
       touched.add(member.name);
       this.loose.spawn(member.name, spec, member.x, member.y, member.z, member.yaw, member.scale, member.scaleY);
@@ -378,9 +436,32 @@ export class World {
     for (const name of touched) this.rebuildInstancesOf(name);
   }
 
+  private bend(plant: Rooted): void {
+    if (plant.pose) return;
+    if (this.swaying.length >= SWAY_CAPACITY) this.settle(this.swaying[0]);
+    plant.pose = plant.list.slice(plant.offset, plant.offset + 16);
+    plant.list.fill(0, plant.offset, plant.offset + 16);
+    this.swaying.push(plant);
+    this.rebuildInstancesOf(plant.name);
+  }
+
+  private settle(plant: Rooted): void {
+    this.swaying.splice(this.swaying.indexOf(plant), 1);
+    plant.leanX = plant.leanZ = plant.swayX = plant.swayZ = 0;
+    if (!plant.pose) return;
+    for (let i = 0; i < 16; i++) plant.list[plant.offset + i] = plant.pose[i];
+    plant.pose = null;
+    this.rebuildInstancesOf(plant.name);
+  }
+
   private renderLoose(): void {
     for (const [name, batch] of this.looseBatches) {
-      const count = this.loose.write(name, batch.matrices);
+      let count = this.loose.write(name, batch.matrices);
+      for (const plant of this.swaying) {
+        if (plant.name !== name || count >= LOOSE_CAPACITY) continue;
+        writeLean(batch.matrices, count * 16, plant, plant.y, plant.yaw, plant.scale, plant.scaleY);
+        count++;
+      }
       batch.mesh.thinInstanceCount = count;
       batch.mesh.setEnabled(count > 0);
       if (count > 0) batch.mesh.thinInstanceBufferUpdated("matrix");

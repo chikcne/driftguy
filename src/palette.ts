@@ -23,6 +23,7 @@ export const PALETTE = {
   cactus: rgb("#6f9a5b"),
   cactusDark: rgb("#4f7a4a"),
   deadWood: rgb("#7a5a45"),
+  root: rgb("#a98a5c"),
   shrub: rgb("#b79a5a"),
   concrete: rgb("#bfae98"),
   concreteDark: rgb("#9a8a78"),
