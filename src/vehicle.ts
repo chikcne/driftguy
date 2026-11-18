@@ -16,6 +16,7 @@ export interface CarInput {
   brake: number;
   steer: number;
   handbrake: boolean;
+  boost: number;
 }
 
 export const BASE_TUNING: CarTuning = {
@@ -57,6 +58,9 @@ const SLIDE_SCRUB = 0.38;
 const HANDBRAKE_DRIFT_ANGLE_LIMIT = 1.25;
 const DRIFT_CATCH_STIFFNESS = 16;
 const DRIFT_CATCH_DAMPING = 3;
+const NITROUS_THRUST = 21;
+const NITROUS_TOP_SPEED = 0.45;
+const OVERSPEED_DRAG = 1.6;
 
 function tyreCurve(slipAngle: number): number {
   return Math.sin(TYRE_SHAPE * Math.atan(TYRE_STIFFNESS * slipAngle));
@@ -127,15 +131,18 @@ export class CarBody {
     const frontSlipAngle = Math.atan2(wheelLat, Math.abs(wheelLong) + LOW_SPEED_SOFTENING);
     const frontForce = -tuning.gripFront * WEIGHT_FRONT * tyreCurve(frontSlipAngle);
 
-    const reversing = input.brake > 0 && input.throttle <= 0 && vF < 1.5;
+    const boost = saturate(input.boost);
+    const throttle = Math.max(input.throttle, boost);
+    const speedLimit = tuning.topSpeed * (1 + NITROUS_TOP_SPEED * boost);
+    const headroom = vF > 0 ? Math.max(0, 1 - (vF / speedLimit) ** 2) : 1;
+    const reversing = input.brake > 0 && throttle <= 0 && vF < 1.5;
     let engine = 0;
     let brake = 0;
     if (reversing) {
       const reverseLimit = tuning.topSpeed * REVERSE_SPEED_FRACTION;
       engine = -input.brake * tuning.engineAccel * 0.6 * saturate(1 + vF / reverseLimit);
     } else {
-      const falloff = vF > 0 ? Math.max(0, 1 - (vF / tuning.topSpeed) ** 2) : 1;
-      engine = input.throttle * tuning.engineAccel * falloff;
+      engine = throttle * tuning.engineAccel * headroom;
       brake = input.brake;
     }
     if (input.handbrake) engine = 0;
@@ -143,7 +150,7 @@ export class CarBody {
     const tractionUse = Math.min(0.97, Math.abs(engine) / TRACTION_LIMIT);
     let rearGripFactor = Math.sqrt(1 - tractionUse * tractionUse);
     rearGripFactor *= 1 - BRAKE_REAR_UNLOAD * brake * saturate(absF / 6);
-    if (input.throttle <= 0.05 && !reversing) rearGripFactor *= 1 - LIFT_OFF_REAR_UNLOAD;
+    if (throttle <= 0.05 && !reversing) rearGripFactor *= 1 - LIFT_OFF_REAR_UNLOAD;
 
     let rearLatForce: number;
     let rearLongForce = 0;
@@ -158,9 +165,9 @@ export class CarBody {
     }
 
     const brakeForce = -direction * brake * BRAKE_DECEL * saturate(absF);
-    const coasting = input.throttle <= 0.05 && !reversing ? ENGINE_BRAKING : 0;
-    const dragForce = -((ROLLING_DRAG + coasting) * Math.tanh(vF) + LINEAR_DRAG * vF);
-    const forceLong = engine + brakeForce + dragForce + rearLongForce - frontForce * sd;
+    const coasting = throttle <= 0.05 && !reversing ? ENGINE_BRAKING : 0;
+    const dragForce = -((ROLLING_DRAG + coasting) * Math.tanh(vF) + LINEAR_DRAG * vF + OVERSPEED_DRAG * Math.max(0, vF - speedLimit));
+    const forceLong = engine + boost * NITROUS_THRUST * headroom + brakeForce + dragForce + rearLongForce - frontForce * sd;
     const forceLat = frontForce * cd + rearLatForce;
 
     const yawAccel =
@@ -181,7 +188,7 @@ export class CarBody {
     this.lateralSpeed = vR;
     this.rearSlipSpeed = input.handbrake ? Math.hypot(vF, rearLat) : Math.abs(rearLat);
     this.frontSlipSpeed = Math.abs(wheelLat);
-    this.burnout = input.handbrake ? 0 : tractionUse * Math.abs(input.throttle) * saturate(1 - absF / (tuning.topSpeed * 0.6));
+    this.burnout = input.handbrake ? 0 : tractionUse * throttle * saturate(1 - absF / (tuning.topSpeed * 0.6));
     this.longAccel = lerp(this.longAccel, forceLong, 0.02);
     this.latAccel = lerp(this.latAccel, forceLat, 0.02);
   }

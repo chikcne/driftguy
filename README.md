@@ -21,8 +21,11 @@ pnpm dev -- --host <address>
 | Brake / reverse | LT          | S / ↓        |
 | Steer           | Left stick  | A D / ← →    |
 | Handbrake       | B / X / RB  | Space        |
+| Nitrous         | A           | E            |
 | Pause           | Start       | Esc          |
 | Mute            |             | M            |
+
+Damaging raiders fills the nitrous gauge; each full gauge banks a tank, up to three. On the upgrade screen the controller's A button is ignored for the first second so a nitrous press can't pick a card by accident.
 
 ## Layout
 

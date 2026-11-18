@@ -10,6 +10,7 @@
   <body>
     <canvas id="view"></canvas>
     <div id="vignette-hit"></div>
+    <div id="rush" hidden></div>
 
     <div id="hud" hidden>
       <div class="xp"><div class="xp-fill" id="xp-fill"></div></div>
@@ -22,6 +23,11 @@
         <div class="speed"><span id="speed">0</span><small>km/h</small></div>
         <div class="bar hull"><div class="bar-fill" id="hull-fill"></div><span class="bar-label" id="hull-label">Hull</span></div>
         <div class="bar smoke"><div class="bar-fill" id="smoke-fill"></div><span class="bar-label">Smoke</span></div>
+        <div class="nitro" id="nitro">
+          <div class="bar nitro-bar"><div class="bar-fill" id="nitro-fill"></div><span class="bar-label">Nitrous</span></div>
+          <div class="nitro-tanks" id="nitro-tanks"></div>
+          <span class="nitro-key" id="nitro-key">A</span>
+        </div>
       </div>
       <div class="loadout" id="loadout"></div>
       <div class="threats" id="threats"></div>
@@ -30,7 +36,7 @@
     <section class="screen" id="title">
       <p class="eyebrow">A wasteland drift survival</p>
       <h1>Driftguy</h1>
-      <p class="tagline">Your smoke is your weapon. Slide wide, choke the raiders, grab their scrap.</p>
+      <p class="tagline">Your smoke is your weapon. Slide wide, choke the raiders, grab their scrap. Hurting them fills your nitrous.</p>
       <div class="controls">
         <div class="control-set" id="pad-controls">
           <h3>Controller</h3>
@@ -39,6 +45,7 @@
             <dt>LT</dt><dd>Brake / reverse</dd>
             <dt>Left stick</dt><dd>Steer</dd>
             <dt>B / X / RB</dt><dd>Handbrake</dd>
+            <dt>A</dt><dd>Nitrous</dd>
             <dt>Start</dt><dd>Pause</dd>
           </dl>
         </div>
@@ -49,6 +56,7 @@
             <dt>S / ↓</dt><dd>Brake / reverse</dd>
             <dt>A D / ← →</dt><dd>Steer</dd>
             <dt>Space</dt><dd>Handbrake</dd>
+            <dt>E</dt><dd>Nitrous</dd>
             <dt>Esc · M</dt><dd>Pause · mute</dd>
           </dl>
         </div>

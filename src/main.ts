@@ -13,7 +13,7 @@ import {
 } from "@babylonjs/core";
 import { GameAudio } from "./audio";
 import { GunSystem, type PickupKind, PickupSystem, REPAIR_CRATE_VALUE, REPAIR_DROP_VALUE } from "./combat";
-import { BlastPool, ShockRings, SkidTracks } from "./effects";
+import { BlastPool, EXHAUST_HALF_SPAN, EXHAUST_HEIGHT, EXHAUST_REAR, ExhaustFlames, ShockRings, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
 import { GibSystem } from "./gibs";
 import { Hud } from "./hud";
@@ -78,6 +78,25 @@ const HEARING_RANGE = 110;
 const PAN_RANGE = 45;
 const TRACK_SLIP_SPEED = 2.5;
 const COMPOUND_BAND_SECONDS = 0.7;
+const NITROUS_MAX_TANKS = 3;
+const NITROUS_STARTING_TANKS = 1;
+const NITROUS_HARM_PER_TANK = 80;
+const NITROUS_SECONDS = 2.4;
+const NITROUS_ATTACK = 0.1;
+const NITROUS_FADE = 0.5;
+const NITROUS_PULLBACK = 6;
+const NITROUS_PULLBACK_EASE_IN = 2.2;
+const NITROUS_PULLBACK_EASE_OUT = 1.4;
+const NITROUS_FOV = 0.035;
+const NITROUS_FOV_KICK = 0.035;
+const NITROUS_SHAKE = 0.32;
+const NITROUS_LOOK_AHEAD = 0.12;
+const NITROUS_FLAME_PUFFS_PER_SECOND = 36;
+const LEVEL_UP_PICK_GUARD = 1;
+const VIGNETTE_WEIGHT = 1.4;
+const NITROUS_VIGNETTE_WEIGHT = 3.2;
+const BLOOM_WEIGHT = 0.3;
+const NITROUS_BLOOM_WEIGHT = 0.5;
 
 function scrapNeeded(level: number): number {
   return Math.floor(3 + level * 3 + Math.pow(level, 1.7));
@@ -101,9 +120,11 @@ class Game {
   private readonly rings: ShockRings;
   private readonly gibs: GibSystem;
   private readonly tracks: SkidTracks;
+  private readonly flames: ExhaustFlames;
+  private readonly pipeline: DefaultRenderingPipeline;
   private readonly carModel: PlayerCarModel;
   private readonly car = new CarBody();
-  private readonly controls: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+  private readonly controls: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: 0 };
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
   private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
@@ -131,6 +152,15 @@ class Game {
   private smokeOutput = 0;
   private rumbleTimer = 0;
   private nextCrate = randRange(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX);
+  private nitroTanks = NITROUS_STARTING_TANKS;
+  private nitroHarm = 0;
+  private nitroBurn = 0;
+  private nitroLevel = 0;
+  private nitroView = 0;
+  private nitroPull = 0;
+  private nitroKick = 0;
+  private flameAccumulator = 0;
+  private pickGuard = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas, true, { stencil: false, powerPreference: "high-performance" });
@@ -186,6 +216,7 @@ class Game {
 
     this.carModel = buildPlayerCar(this.scene);
     this.smoke.hideGhostsBehind(this.carModel.shadowCasters);
+    this.flames = new ExhaustFlames(this.scene, this.carModel.lean);
     for (const mesh of this.carModel.shadowCasters) {
       mesh.material = flat;
       mesh.receiveShadows = true;
@@ -193,17 +224,18 @@ class Game {
     }
 
     const pipeline = new DefaultRenderingPipeline("pipeline", true, this.scene, [this.camera]);
+    this.pipeline = pipeline;
     pipeline.samples = 4;
     pipeline.fxaaEnabled = true;
     pipeline.bloomEnabled = true;
     pipeline.bloomThreshold = 0.82;
-    pipeline.bloomWeight = 0.3;
+    pipeline.bloomWeight = BLOOM_WEIGHT;
     pipeline.bloomKernel = 48;
     pipeline.bloomScale = 0.5;
     pipeline.imageProcessing.contrast = 1.12;
     pipeline.imageProcessing.exposure = 1.02;
     pipeline.imageProcessing.vignetteEnabled = true;
-    pipeline.imageProcessing.vignetteWeight = 1.4;
+    pipeline.imageProcessing.vignetteWeight = VIGNETTE_WEIGHT;
     pipeline.imageProcessing.vignetteColor = new Color4(0.25, 0.12, 0.1, 0);
 
     this.smokeEnvironment = {
@@ -254,8 +286,9 @@ class Game {
         this.simulate(dt);
         break;
       case "levelup":
+        this.pickGuard = Math.max(0, this.pickGuard - dt);
         if (this.input.menuMove !== 0) this.hud.moveSelection(this.input.menuMove);
-        if (this.input.confirm) this.hud.confirmSelection();
+        if (this.input.confirm && !(this.input.padConfirm && this.pickGuard > 0)) this.hud.confirmSelection();
         break;
       case "paused":
         if (this.input.pause || this.input.confirm) this.setPhase("playing");
@@ -272,7 +305,8 @@ class Game {
     }
 
     const driving = this.phase === "playing";
-    this.audio.drive(saturate(this.car.speed / this.stats.tuning.topSpeed), driving ? this.input.throttle : 0, this.smokeOutput, driving);
+    this.audio.drive(saturate(this.car.speed / this.stats.tuning.topSpeed), driving ? this.input.throttle : 0, this.smokeOutput, this.nitroLevel, driving);
+    this.hud.setRush(driving ? this.nitroView : 0);
     this.scene.render();
   }
 
@@ -298,6 +332,13 @@ class Game {
     this.shake = 0;
     this.pendingBlasts.length = 0;
     this.nextCrate = randRange(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX);
+    this.nitroTanks = NITROUS_STARTING_TANKS;
+    this.nitroHarm = 0;
+    this.nitroBurn = 0;
+    this.nitroLevel = 0;
+    this.nitroView = 0;
+    this.nitroPull = 0;
+    this.nitroKick = 0;
     this.car.reset();
     this.enemies.clear();
     this.spawner.reset();
@@ -344,11 +385,13 @@ class Game {
     this.controls.brake = this.input.brake;
     this.controls.steer = this.input.steer;
     this.controls.handbrake = this.input.handbrake;
+    this.controls.boost = this.updateNitrous(dt);
     this.car.step(dt, this.controls, this.stats.tuning);
     this.collideCarWithWorld();
     this.world.update(this.car.x, this.car.z);
 
     this.emitTyreSmoke(dt);
+    this.emitExhaustFlames(dt);
     this.spawner.update(dt, this.time, this.car, this.enemies);
     this.enemies.update({
       dt,
@@ -365,6 +408,7 @@ class Game {
     this.gun.update(dt, this.car, this.stats, this.enemies, this.audio);
     this.enemies.sweepDead((enemy) => this.onEnemyKilled(enemy));
     this.updateBlasts(dt);
+    this.gatherNitrous();
     this.updateCrates(dt);
     this.pickups.update(dt, this.car, this.stats.magnetRadius, (kind, value) => this.collect(kind, value));
 
@@ -391,6 +435,13 @@ class Game {
       this.smokeOutput,
     );
     this.hud.setThreats(this.spawner.threats);
+    this.hud.setNitro(
+      this.nitroTanks,
+      NITROUS_MAX_TANKS,
+      this.nitroBurn > 0 ? this.nitroBurn / NITROUS_SECONDS : this.nitroTanks >= NITROUS_MAX_TANKS ? 1 : this.nitroHarm / NITROUS_HARM_PER_TANK,
+      this.nitroBurn > 0,
+      this.input.usingGamepad,
+    );
 
     if (this.hp <= 0) {
       this.die();
@@ -399,7 +450,82 @@ class Game {
       this.level++;
       this.audio.levelUp();
       this.hud.openLevelUp(rollChoices(this.levels, 3), this.levels);
+      this.pickGuard = LEVEL_UP_PICK_GUARD;
       this.setPhase("levelup");
+    }
+  }
+
+  private updateNitrous(dt: number): number {
+    if (this.input.nitro && this.nitroBurn <= 0) {
+      if (this.nitroTanks > 0) this.igniteNitrous();
+      else this.audio.nitroEmpty();
+    }
+    if (this.nitroBurn <= 0) return (this.nitroLevel = 0);
+    this.nitroBurn = Math.max(0, this.nitroBurn - dt);
+    const burned = NITROUS_SECONDS - this.nitroBurn;
+    this.nitroLevel = Math.min(saturate(burned / NITROUS_ATTACK), saturate(this.nitroBurn / NITROUS_FADE));
+    return this.nitroLevel;
+  }
+
+  private igniteNitrous(): void {
+    const car = this.car;
+    const fx = Math.sin(car.heading);
+    const fz = Math.cos(car.heading);
+    const x = car.x - fx * EXHAUST_REAR;
+    const z = car.z - fz * EXHAUST_REAR;
+    this.nitroTanks--;
+    this.nitroBurn = NITROUS_SECONDS;
+    this.nitroKick = 1;
+    this.shake = Math.max(this.shake, 0.6);
+    this.rings.spawn(x, z, 8);
+    this.gibs.sparks(x, groundHeight(x, z) + EXHAUST_HEIGHT, z, 14, 13, car.vx - fx * 14, car.vz - fz * 14);
+    this.smoke.shockwave(x, z, 9, 7);
+    this.audio.nitroIgnite();
+    this.hud.kickRush();
+    this.input.rumble(1, 0.8, 280);
+  }
+
+  private gatherNitrous(): void {
+    const harm = this.enemies.takeHarmDealt();
+    if (this.nitroTanks >= NITROUS_MAX_TANKS) {
+      this.nitroHarm = 0;
+      return;
+    }
+    this.nitroHarm += harm;
+    while (this.nitroHarm >= NITROUS_HARM_PER_TANK && this.nitroTanks < NITROUS_MAX_TANKS) {
+      this.nitroHarm -= NITROUS_HARM_PER_TANK;
+      this.nitroTanks++;
+      this.audio.nitroReady();
+    }
+    if (this.nitroTanks >= NITROUS_MAX_TANKS) this.nitroHarm = 0;
+  }
+
+  private emitExhaustFlames(dt: number): void {
+    if (this.nitroLevel <= 0) return;
+    const car = this.car;
+    const fx = Math.sin(car.heading);
+    const fz = Math.cos(car.heading);
+    this.flameAccumulator += NITROUS_FLAME_PUFFS_PER_SECOND * this.nitroLevel * dt;
+    while (this.flameAccumulator >= 1) {
+      this.flameAccumulator -= 1;
+      const side = Math.random() < 0.5 ? -EXHAUST_HALF_SPAN : EXHAUST_HALF_SPAN;
+      const back = EXHAUST_REAR + randRange(0.4, 1.6);
+      const x = car.x - fx * back + fz * side;
+      const z = car.z - fz * back - fx * side;
+      this.smoke.emit(
+        PUFF.fire,
+        x,
+        groundHeight(x, z) + EXHAUST_HEIGHT + 0.1,
+        z,
+        car.vx * 0.55 - fx * 6 + randSigned(1.2),
+        randRange(0.2, 1.4),
+        car.vz * 0.55 - fz * 6 + randSigned(1.2),
+        randRange(0.3, 0.5),
+        1.4,
+        randRange(0.22, 0.42),
+        0.8,
+        2.5,
+      );
     }
   }
 
@@ -680,6 +806,8 @@ class Game {
     this.carModel.root.setEnabled(false);
     this.car.vx = this.car.vz = this.car.yawRate = 0;
     this.shake = 1;
+    this.nitroBurn = 0;
+    this.nitroLevel = 0;
     this.smokeOutput = 0;
     this.audio.defeat();
     this.input.rumble(1, 1, 500);
@@ -723,30 +851,42 @@ class Game {
 
     model.gun.rotation.y = this.gun.angle - car.heading;
     model.fan.rotation.z += 26 * dt;
+    this.flames.update(this.nitroLevel, this.clock);
   }
 
   private snapCamera(): void {
     this.cameraTarget.set(this.car.x, groundHeight(this.car.x, this.car.z), this.car.z);
     this.cameraDistance = CAMERA_DISTANCE_SLOW;
+    this.nitroView = 0;
+    this.nitroPull = 0;
+    this.nitroKick = 0;
     this.updateCamera(0);
   }
 
   private updateCamera(dt: number): void {
     const car = this.car;
     const speedFraction = saturate(car.speed / this.stats.tuning.topSpeed);
-    const aimX = car.x + car.vx * CAMERA_LOOK_AHEAD_SECONDS;
-    const aimZ = car.z + car.vz * CAMERA_LOOK_AHEAD_SECONDS;
+    this.nitroView = damp(this.nitroView, this.nitroLevel, this.nitroLevel > this.nitroView ? 9 : 2.6, dt);
+    this.nitroPull = damp(this.nitroPull, this.nitroLevel, this.nitroLevel > this.nitroPull ? NITROUS_PULLBACK_EASE_IN : NITROUS_PULLBACK_EASE_OUT, dt);
+    this.nitroKick = Math.max(0, this.nitroKick - dt * 3.2);
+    const lookAhead = CAMERA_LOOK_AHEAD_SECONDS + NITROUS_LOOK_AHEAD * this.nitroView;
+    const aimX = car.x + car.vx * lookAhead;
+    const aimZ = car.z + car.vz * lookAhead;
     this.cameraTarget.x = damp(this.cameraTarget.x, aimX, 5, dt);
     this.cameraTarget.z = damp(this.cameraTarget.z, aimZ, 5, dt);
     this.cameraTarget.y = damp(this.cameraTarget.y, groundHeight(car.x, car.z), 3, dt);
     this.cameraDistance = damp(this.cameraDistance, lerp(CAMERA_DISTANCE_SLOW, CAMERA_DISTANCE_FAST, speedFraction), 1.5, dt);
 
-    this.shake = Math.max(0, this.shake - dt * 2.2);
+    this.shake = Math.max(NITROUS_SHAKE * this.nitroLevel, this.shake - dt * 2.2);
     const jolt = this.shake * this.shake * 1.6;
+    const distance = this.cameraDistance + NITROUS_PULLBACK * this.nitroPull;
+    this.camera.fov = CAMERA_FOV + NITROUS_FOV * this.nitroView + NITROUS_FOV_KICK * this.nitroKick * this.nitroKick;
+    this.pipeline.imageProcessing.vignetteWeight = lerp(VIGNETTE_WEIGHT, NITROUS_VIGNETTE_WEIGHT, this.nitroView);
+    this.pipeline.bloomWeight = lerp(BLOOM_WEIGHT, NITROUS_BLOOM_WEIGHT, this.nitroView);
     this.camera.position.set(
-      this.cameraTarget.x + CAMERA_OFFSET.x * this.cameraDistance + randSigned(jolt),
-      this.cameraTarget.y + CAMERA_OFFSET.y * this.cameraDistance + randSigned(jolt),
-      this.cameraTarget.z + CAMERA_OFFSET.z * this.cameraDistance + randSigned(jolt),
+      this.cameraTarget.x + CAMERA_OFFSET.x * distance + randSigned(jolt),
+      this.cameraTarget.y + CAMERA_OFFSET.y * distance + randSigned(jolt),
+      this.cameraTarget.z + CAMERA_OFFSET.z * distance + randSigned(jolt),
     );
     this.camera.setTarget(this.cameraTarget);
     this.sun.position.set(
@@ -758,9 +898,9 @@ class Game {
 
   private updateRumble(dt: number): void {
     this.rumbleTimer -= dt;
-    if (this.rumbleTimer > 0 || this.smokeOutput < 0.15) return;
+    if (this.rumbleTimer > 0 || (this.smokeOutput < 0.15 && this.nitroLevel <= 0)) return;
     this.rumbleTimer = 0.1;
-    this.input.rumble(0, this.smokeOutput * 0.35, 130);
+    this.input.rumble(0.3 * this.nitroLevel, Math.max(this.smokeOutput * 0.35, 0.7 * this.nitroLevel), 130);
   }
 }
 

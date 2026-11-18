@@ -80,10 +80,15 @@ export class Hud {
   private readonly padControls = element("pad-controls");
   private readonly keyControls = element("key-controls");
   private readonly threats = element("threats");
+  private readonly rush = element("rush");
+  private readonly nitro = element("nitro");
+  private readonly nitroFill = element("nitro-fill");
+  private readonly nitroTanks = element("nitro-tanks");
+  private readonly nitroKey = element("nitro-key");
   private readonly threatMarkers: ThreatMarker[] = [];
   private choices: UpgradeDef[] = [];
   private selected = 0;
-  private shown = { timer: "", kills: -1, speed: -1, level: -1, hull: "" };
+  private shown = { timer: "", kills: -1, speed: -1, level: -1, hull: "", tanks: -1, tankSlots: -1, nitroKey: "", rush: -1 };
 
   constructor() {
     element("start-button").addEventListener("click", () => this.onStart?.());
@@ -130,6 +135,37 @@ export class Hud {
     this.hullFill.style.transform = `scaleX(${Math.max(0, hp / maxHp)})`;
     this.smokeFill.style.transform = `scaleX(${Math.min(1, smoke)})`;
     this.xpFill.style.width = `${Math.min(100, xpFraction * 100)}%`;
+  }
+
+  setNitro(tanks: number, maxTanks: number, fill: number, burning: boolean, usingGamepad: boolean): void {
+    if (maxTanks !== this.shown.tankSlots) {
+      this.shown.tankSlots = maxTanks;
+      this.shown.tanks = -1;
+      this.nitroTanks.replaceChildren(...Array.from({ length: maxTanks }, () => document.createElement("i")));
+    }
+    if (tanks !== this.shown.tanks) {
+      if (tanks > this.shown.tanks && this.shown.tanks >= 0) this.restart(this.nitro, "banked");
+      this.shown.tanks = tanks;
+      Array.from(this.nitroTanks.children).forEach((tank, i) => tank.classList.toggle("full", i < tanks));
+      this.nitro.classList.toggle("ready", tanks > 0);
+    }
+    const key = usingGamepad ? "A" : "E";
+    if (key !== this.shown.nitroKey) this.nitroKey.textContent = this.shown.nitroKey = key;
+    this.nitro.classList.toggle("burning", burning);
+    this.nitroFill.style.transform = `scaleX(${Math.max(0, Math.min(1, fill))})`;
+  }
+
+  setRush(amount: number): void {
+    const level = Math.round(Math.max(0, Math.min(1, amount)) * 50) / 50;
+    if (level === this.shown.rush) return;
+    this.shown.rush = level;
+    this.rush.style.opacity = String(level);
+    this.rush.hidden = level === 0;
+    this.root.classList.toggle("rushing", level > 0.3);
+  }
+
+  kickRush(): void {
+    this.restart(this.rush, "kick");
   }
 
   setLoadout(levels: UpgradeLevels): void {
@@ -238,6 +274,12 @@ export class Hud {
     const marker: ThreatMarker = { root, arrow, tag, name, detail, shownKind: null, shownDetail: "" };
     this.threatMarkers.push(marker);
     return marker;
+  }
+
+  private restart(target: HTMLElement, className: string): void {
+    target.classList.remove(className);
+    void target.offsetWidth;
+    target.classList.add(className);
   }
 
   private select(index: number): void {

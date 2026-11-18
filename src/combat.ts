@@ -85,7 +85,7 @@ export class GunSystem {
           const dx = enemy.x - bullet.x;
           const dz = enemy.z - bullet.z;
           if (dx * dx + dz * dz > reach * reach) continue;
-          enemy.hp -= bullet.damage;
+          enemies.hurt(enemy, bullet.damage);
           enemy.flinch = 1;
           spent = true;
           break;

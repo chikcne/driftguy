@@ -16,6 +16,8 @@ export class GameAudio {
   private engineFilter: BiquadFilterNode | null = null;
   private skidGain: GainNode | null = null;
   private skidFilter: BiquadFilterNode | null = null;
+  private nitroGain: GainNode | null = null;
+  private nitroFilter: BiquadFilterNode | null = null;
   private noise: AudioBuffer | null = null;
   private impacts: DynamicsCompressorNode | null = null;
   private muted = false;
@@ -76,6 +78,18 @@ export class GameAudio {
     this.skidGain.gain.value = 0;
     skidSource.connect(this.skidFilter).connect(this.skidGain).connect(this.master);
     skidSource.start();
+
+    const nitroSource = context.createBufferSource();
+    nitroSource.buffer = this.noise;
+    nitroSource.loop = true;
+    this.nitroFilter = context.createBiquadFilter();
+    this.nitroFilter.type = "bandpass";
+    this.nitroFilter.frequency.value = 1400;
+    this.nitroFilter.Q.value = 0.6;
+    this.nitroGain = context.createGain();
+    this.nitroGain.gain.value = 0;
+    nitroSource.connect(this.nitroFilter).connect(this.nitroGain).connect(this.master);
+    nitroSource.start(0, 0.7);
   }
 
   toggleMute(): void {
@@ -83,19 +97,22 @@ export class GameAudio {
     if (this.master) this.master.gain.value = this.muted ? 0 : MASTER_VOLUME;
   }
 
-  drive(speedFraction: number, throttle: number, slide: number, active: boolean): void {
+  drive(speedFraction: number, throttle: number, slide: number, boost: number, active: boolean): void {
     const context = this.context;
-    if (!context || !this.engineLow || !this.engineHigh || !this.engineGain || !this.engineFilter || !this.skidGain || !this.skidFilter) return;
+    if (!context || !this.engineLow || !this.engineHigh || !this.engineGain || !this.engineFilter || !this.skidGain || !this.skidFilter || !this.nitroGain || !this.nitroFilter) return;
     const now = context.currentTime;
     const gearPosition = clamp(speedFraction, 0, 0.999) * GEAR_COUNT;
-    const revs = clamp(0.25 + 0.6 * (gearPosition % 1) + 0.15 * speedFraction + slide * 0.25 * throttle, 0, 1.2);
+    const cruise = clamp(0.25 + 0.6 * (gearPosition % 1) + 0.15 * speedFraction + slide * 0.25 * throttle, 0, 1.2);
+    const revs = lerp(cruise, 1.45, boost * 0.85);
     const frequency = lerp(42, 150, revs);
     this.engineLow.frequency.setTargetAtTime(frequency, now, 0.05);
     this.engineHigh.frequency.setTargetAtTime(frequency * 0.502, now, 0.05);
     this.engineFilter.frequency.setTargetAtTime(lerp(320, 1500, clamp(throttle * 0.7 + revs * 0.4, 0, 1)), now, 0.08);
-    this.engineGain.gain.setTargetAtTime(active ? 0.1 + 0.1 * throttle : 0, now, 0.08);
+    this.engineGain.gain.setTargetAtTime(active ? 0.1 + 0.1 * throttle + 0.07 * boost : 0, now, 0.08);
     this.skidGain.gain.setTargetAtTime(active ? clamp(slide, 0, 1.2) * 0.2 : 0, now, 0.06);
     this.skidFilter.frequency.setTargetAtTime(lerp(500, 1100, speedFraction), now, 0.1);
+    this.nitroGain.gain.setTargetAtTime(active ? boost * 0.2 : 0, now, 0.05);
+    this.nitroFilter.frequency.setTargetAtTime(lerp(1100, 2600, boost), now, 0.12);
   }
 
   thud(strength: number): void {
@@ -142,6 +159,25 @@ export class GameAudio {
 
   pickup(pitch: number): void {
     this.tone(660 + pitch * 40, 0.07, 0.08, "triangle", 0);
+  }
+
+  nitroIgnite(): void {
+    const context = this.context;
+    if (!context || !this.impacts) return;
+    const now = context.currentTime;
+    this.drop(this.impacts, now, 170, 38, 0.5, 0.9);
+    this.sweep(this.impacts, now, 500, 9000, 0.45, 0.5, true);
+    this.sweep(this.impacts, now + 0.02, 6000, 900, 0.9, 0.3, false);
+    [330, 495, 990].forEach((frequency, i) => this.tone(frequency, 0.22, 0.05, "sawtooth", i * 0.035));
+  }
+
+  nitroReady(): void {
+    [988, 1319, 1976].forEach((frequency, i) => this.tone(frequency, 0.14, 0.08, "square", i * 0.06));
+  }
+
+  nitroEmpty(): void {
+    this.tone(120, 0.09, 0.09, "square", 0);
+    this.burst(0.05, 900, 0.08, "bandpass");
   }
 
   levelUp(): void {

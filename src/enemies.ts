@@ -93,6 +93,7 @@ export class EnemySystem {
   readonly meshes: Mesh[];
   private readonly batches: Record<EnemyKind, InstanceBatch>;
   private readonly sample = createSmokeSample();
+  private harmDealt = 0;
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
   private readonly shove: Shove = { hit: false, impulse: 0, x: 0, z: 0 };
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
@@ -113,6 +114,20 @@ export class EnemySystem {
 
   clear(): void {
     this.active.length = 0;
+    this.harmDealt = 0;
+  }
+
+  hurt(enemy: Enemy, amount: number): void {
+    const landed = Math.min(amount, enemy.hp);
+    if (landed <= 0) return;
+    enemy.hp -= amount;
+    this.harmDealt += (landed * enemy.spec.hp) / enemy.maxHp;
+  }
+
+  takeHarmDealt(): number {
+    const harm = this.harmDealt;
+    this.harmDealt = 0;
+    return harm;
   }
 
   spawn(kind: EnemyKind, x: number, z: number, hpScale: number, facing: number): Enemy | null {
@@ -150,7 +165,7 @@ export class EnemySystem {
       const dz = enemy.z - z;
       const distSq = dx * dx + dz * dz;
       if (distSq > reach * reach) continue;
-      enemy.hp -= damage;
+      this.hurt(enemy, damage);
       enemy.flinch = 1;
       const dist = Math.sqrt(distSq) || 1;
       const knock = BLAST_KNOCK * (1 - (0.6 * dist) / reach);
@@ -188,7 +203,7 @@ export class EnemySystem {
       const cloud = smoke.sample(enemy.x, enemy.z, this.sample, enemy.vx, enemy.vz, stir);
       if (cloud.total > SMOKE_THRESHOLD) {
         const density = Math.min(SMOKE_DENSITY_CAP, cloud.total / SMOKE_FULL_DENSITY);
-        enemy.hp -= stats.smokeDamage * density * dt;
+        this.hurt(enemy, stats.smokeDamage * density * dt);
         enemy.flinch = Math.max(enemy.flinch, 0.6);
         enemy.blindTimer = BLINDED_LINGER;
         const share = cloud.total * KIND_SHARE_THRESHOLD;
@@ -196,7 +211,7 @@ export class EnemySystem {
         if (cloud.byKind[PUFF.ember] > share) enemy.emberTimer = EMBER_LINGER;
         if (cloud.byKind[PUFF.toxic] > share) enemy.toxicTimer = TOXIC_LINGER;
       }
-      if (enemy.toxicTimer > 0) enemy.hp -= stats.toxicDps * dt;
+      if (enemy.toxicTimer > 0) this.hurt(enemy, stats.toxicDps * dt);
 
       this.steer(enemy, ctx);
       enemy.x += enemy.vx * dt;
@@ -318,7 +333,7 @@ export class EnemySystem {
 
     if (stats.ramDamage > 0 && car.speed > RAM_MIN_SPEED && enemy.ramCooldown <= 0) {
       enemy.ramCooldown = RAM_COOLDOWN;
-      enemy.hp -= stats.ramDamage * (car.speed / 20);
+      this.hurt(enemy, stats.ramDamage * (car.speed / 20));
       enemy.flinch = 1;
     }
     if (enemy.hitCooldown <= 0) {

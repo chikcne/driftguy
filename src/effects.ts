@@ -1,4 +1,4 @@
-import { Color3, Mesh, MeshBuilder, Scene, StandardMaterial, VertexBuffer } from "@babylonjs/core";
+import { Color3, Mesh, MeshBuilder, type Node, Scene, StandardMaterial, VertexBuffer } from "@babylonjs/core";
 import { groundHeight } from "./terrain";
 
 const BLAST_POOL = 12;
@@ -222,5 +222,71 @@ export class SkidTracks {
     this.positions[offset] = x;
     this.positions[offset + 1] = groundHeight(x, z) + TRACK_LIFT;
     this.positions[offset + 2] = z;
+  }
+}
+
+export const EXHAUST_HALF_SPAN = 0.98;
+export const EXHAUST_HEIGHT = 0.5;
+export const EXHAUST_REAR = 2.3;
+
+const FLAME_LENGTH = 3.6;
+const FLAME_WIDTH = 0.62;
+const FLAME_CORE = 0.55;
+
+interface Flame {
+  glow: Mesh;
+  core: Mesh;
+  phase: number;
+}
+
+export class ExhaustFlames {
+  private readonly flames: Flame[] = [];
+
+  constructor(scene: Scene, parent: Node) {
+    const glowMaterial = this.material(scene, new Color3(0.25, 0.7, 1), 0.7);
+    const coreMaterial = this.material(scene, new Color3(0.92, 1, 1), 1);
+    for (const side of [-1, 1]) {
+      const glow = this.cone(scene, glowMaterial, 21);
+      const core = this.cone(scene, coreMaterial, 22);
+      for (const mesh of [glow, core]) {
+        mesh.parent = parent;
+        mesh.position.set(side * EXHAUST_HALF_SPAN, EXHAUST_HEIGHT, -EXHAUST_REAR);
+      }
+      this.flames.push({ glow, core, phase: side * 1.7 });
+    }
+  }
+
+  update(level: number, time: number): void {
+    const lit = level > 0.02;
+    for (const flame of this.flames) {
+      flame.glow.setEnabled(lit);
+      flame.core.setEnabled(lit);
+      if (!lit) continue;
+      const flicker = 0.82 + 0.18 * Math.sin(time * 71 + flame.phase) + 0.1 * Math.sin(time * 173 + flame.phase * 3);
+      const length = FLAME_LENGTH * level * flicker;
+      const width = FLAME_WIDTH * (0.6 + 0.4 * level);
+      flame.glow.scaling.set(width, width, length);
+      flame.core.scaling.set(width * FLAME_CORE, width * FLAME_CORE, length * FLAME_CORE);
+    }
+  }
+
+  private material(scene: Scene, color: Color3, alpha: number): StandardMaterial {
+    const material = new StandardMaterial("flame", scene);
+    material.disableLighting = true;
+    material.emissiveColor = color;
+    material.alpha = alpha;
+    return material;
+  }
+
+  private cone(scene: Scene, material: StandardMaterial, alphaIndex: number): Mesh {
+    const mesh = MeshBuilder.CreateCylinder("flame", { height: 1, diameterTop: 0, diameterBottom: 1, tessellation: 6 }, scene);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.z = -0.5;
+    mesh.bakeCurrentTransformIntoVertices();
+    mesh.material = material;
+    mesh.alphaIndex = alphaIndex;
+    mesh.isPickable = false;
+    mesh.setEnabled(false);
+    return mesh;
   }
 }

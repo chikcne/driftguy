@@ -469,3 +469,143 @@ dd {
   color: var(--amber);
   margin-bottom: 4px;
 }
+
+#rush {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(120, 215, 255, 0.16) 100%);
+  -webkit-mask-image: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.35) 72%, #000 100%);
+  mask-image: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.35) 72%, #000 100%);
+}
+
+#rush::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #d6f3ff;
+  opacity: 0;
+}
+
+#rush.kick::after {
+  animation: rush-kick 0.4s ease-out;
+}
+
+@keyframes rush-kick {
+  from {
+    opacity: 0.75;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.nitro {
+  --nitro: #78d7ff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nitro-bar {
+  flex: 1;
+  height: 14px;
+}
+
+.nitro .bar-fill {
+  background: linear-gradient(90deg, #2f8fd0, var(--nitro));
+  opacity: 0.75;
+}
+
+.nitro .bar-label {
+  font-size: 9px;
+}
+
+.nitro.burning .bar-fill {
+  background: linear-gradient(90deg, var(--nitro), #fff);
+  opacity: 1;
+}
+
+.nitro.burning .nitro-bar {
+  box-shadow: 0 0 14px var(--nitro);
+}
+
+.nitro.banked .nitro-bar {
+  animation: nitro-banked 0.5s ease-out;
+}
+
+.nitro-tanks {
+  display: flex;
+  gap: 4px;
+}
+
+.nitro-tanks i {
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--panel);
+  border: 1px solid rgba(120, 215, 255, 0.45);
+}
+
+.nitro-tanks i.full {
+  background: var(--nitro);
+  border-color: #fff;
+  box-shadow: 0 0 8px var(--nitro);
+}
+
+.nitro-key {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-shadow: none;
+  color: var(--ink);
+  background: var(--paper);
+  opacity: 0.3;
+}
+
+.nitro.ready .nitro-key {
+  background: var(--nitro);
+  opacity: 1;
+  animation: nitro-ready 0.9s ease-in-out infinite;
+}
+
+.nitro.burning .nitro-key {
+  animation: none;
+  opacity: 0.3;
+}
+
+.speed {
+  transform-origin: left bottom;
+  transition: transform 0.18s ease-out, color 0.18s ease-out;
+}
+
+#hud.rushing .speed {
+  color: #c9efff;
+  transform: scale(1.14) skewX(-8deg);
+  text-shadow: 0 2px 0 rgba(43, 29, 26, 0.45), 0 0 18px #78d7ff;
+}
+
+@keyframes nitro-ready {
+  50% {
+    transform: scale(1.18);
+    box-shadow: 0 0 12px var(--nitro);
+  }
+}
+
+@keyframes nitro-banked {
+  from {
+    box-shadow: 0 0 0 0 #fff, 0 0 22px 6px var(--nitro);
+    filter: brightness(2.2);
+  }
+  to {
+    box-shadow: 0 0 0 10px transparent, 0 0 0 0 transparent;
+    filter: brightness(1);
+  }
+}

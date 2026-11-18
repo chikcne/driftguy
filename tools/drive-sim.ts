@@ -24,7 +24,7 @@ function run(label: string, phases: Phase[], initialSpeed = 0): void {
   }
 }
 
-const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: 0 };
 const gas: CarInput = { ...idle, throttle: 1 };
 
 run("launch", [{ until: 8, input: gas }]);
@@ -48,6 +48,15 @@ run(
   ],
   26,
 );
+run(
+  "nitrous from top speed",
+  [
+    { until: 2.4, input: { ...gas, boost: 1 } },
+    { until: 5, input: gas },
+  ],
+  33,
+);
+run("nitrous from standstill", [{ until: 2.4, input: { ...gas, boost: 1 } }]);
 run("coast", [{ until: 4, input: idle }], 30);
 run("brake", [{ until: 3, input: { ...idle, brake: 1 } }], 30);
 run("reverse", [{ until: 3, input: { ...idle, brake: 1 } }], 0);

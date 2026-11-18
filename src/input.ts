@@ -32,6 +32,8 @@ export class Input {
   handbrake = false;
   menuMove = 0;
   confirm = false;
+  padConfirm = false;
+  nitro = false;
   pause = false;
   mute = false;
   usingGamepad = false;
@@ -77,6 +79,8 @@ export class Input {
     let menuMove = (pressed("KeyD") || pressed("ArrowRight") ? 1 : 0) - (pressed("KeyA") || pressed("ArrowLeft") ? 1 : 0);
     let confirm = pressed("Enter");
     let pause = pressed("Escape") || pressed("KeyP");
+    let nitro = pressed("KeyE");
+    let padConfirm = false;
     this.mute = pressed("KeyM");
 
     const pad = this.activePad();
@@ -98,7 +102,9 @@ export class Input {
       const menuAxis = (buttons[PAD.dpadRight] ? 1 : 0) - (buttons[PAD.dpadLeft] ? 1 : 0) || (Math.abs(stick) > MENU_STICK_THRESHOLD ? Math.sign(stick) : 0);
       if (menuAxis !== 0 && menuAxis !== this.previousMenuAxis) menuMove = menuAxis;
       this.previousMenuAxis = menuAxis;
-      confirm = confirm || edge(PAD.a);
+      padConfirm = edge(PAD.a);
+      confirm = confirm || padConfirm;
+      nitro = nitro || padConfirm;
       pause = pause || edge(PAD.start);
       this.previousPadButtons = buttons;
     }
@@ -109,6 +115,8 @@ export class Input {
     this.handbrake = handbrake;
     this.menuMove = menuMove;
     this.confirm = confirm;
+    this.padConfirm = padConfirm;
+    this.nitro = nitro;
     this.pause = pause;
     this.pressedThisFrame.clear();
   }
