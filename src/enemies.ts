@@ -1,4 +1,4 @@
-import { Material, Scene, ShadowGenerator } from "@babylonjs/core";
+import { Material, type Mesh, Scene, ShadowGenerator } from "@babylonjs/core";
 import { InstanceBatch } from "./kit";
 import type { Shove } from "./loose";
 import { clamp, moveToward, randRange, randSigned, TAU, wrapAngle } from "./math";
@@ -86,6 +86,7 @@ const STIR_RATE = 1.6;
 
 export class EnemySystem {
   readonly active: Enemy[] = [];
+  readonly meshes: Mesh[];
   private readonly batches: Record<EnemyKind, InstanceBatch>;
   private readonly sample = createSmokeSample();
   private readonly contact: Contact = { hit: false, nx: 0, nz: 0 };
@@ -103,6 +104,7 @@ export class EnemySystem {
       batches[kind] = new InstanceBatch(mesh, MAX_ENEMIES);
     }
     this.batches = batches;
+    this.meshes = Object.values(models);
   }
 
   clear(): void {

@@ -1,4 +1,4 @@
-import { type Camera, type Color3, type Scene, Vector3 } from "@babylonjs/core";
+import { type Camera, type Color3, type Mesh, type Scene, Vector3 } from "@babylonjs/core";
 import { saturate, smoothstep, TAU } from "./math";
 import { type PuffLook, puffHeight, SmokeVolume, type VolumeView } from "./smokeVolume";
 import { groundHeight } from "./terrain";
@@ -131,6 +131,10 @@ export class SmokeSystem {
 
   clear(): void {
     this.count = 0;
+  }
+
+  revealInside(meshes: Mesh[]): void {
+    this.volume.revealInside(meshes);
   }
 
   emit(

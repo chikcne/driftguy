@@ -169,6 +169,7 @@ class Game {
     this.world = new World(this.scene, flat, shadows);
     this.smoke = new SmokeSystem(this.scene, this.camera, PALETTE.haze, FOG_START, FOG_END);
     this.enemies = new EnemySystem(this.scene, flat, shadows);
+    this.smoke.revealInside(this.enemies.meshes);
     this.gun = new GunSystem(this.scene);
     this.pickups = new PickupSystem(this.scene, flat);
     this.blasts = new BlastPool(this.scene);

@@ -1,4 +1,4 @@
-import { Camera, Color3, Constants, Effect, Mesh, MeshBuilder, RawTexture3D, Scene, ShaderMaterial, Texture, Vector2, Vector3 } from "@babylonjs/core";
+import { Camera, Color3, Color4, Constants, Effect, Mesh, MeshBuilder, RawTexture3D, RenderTargetTexture, Scene, ShaderMaterial, Texture, Vector2, Vector3 } from "@babylonjs/core";
 
 export interface PuffField {
   count: number;
@@ -112,6 +112,9 @@ const HEAT_GLOW = 0.3;
 const SUN_FLATTEN = 0.75;
 const RIM_START = 0.55;
 const RIM_STRENGTH = 0.4;
+const GHOST_SHADE = 0.52;
+const GHOST_LIFT = 0.3;
+const GHOST_DEPTH_SLACK = 0.5;
 const GROUND_SHADOW = 0.34;
 const GROUND_SHADOW_LEVEL = 0.3;
 const PUFFS_PER_REBUILD_STEP = 700;
@@ -191,6 +194,7 @@ uniform sampler3D fineTex;
 uniform sampler3D tintTex;
 uniform sampler3D noiseTex;
 uniform sampler2D depthMap;
+uniform sampler2D ghostMap;
 uniform vec3 camPos;
 uniform vec3 camForward;
 uniform vec3 volMin;
@@ -242,6 +246,9 @@ const float HEAT_HIGH = ${HEAT_HIGH.toFixed(3)};
 const float HEAT_GLOW = ${HEAT_GLOW.toFixed(3)};
 const float RIM_START = ${RIM_START.toFixed(3)};
 const float RIM_STRENGTH = ${RIM_STRENGTH.toFixed(3)};
+const float GHOST_SHADE = ${GHOST_SHADE.toFixed(3)};
+const float GHOST_LIFT = ${GHOST_LIFT.toFixed(3)};
+const float GHOST_DEPTH_SLACK = ${GHOST_DEPTH_SLACK.toFixed(3)};
 const float GROUND_SHADOW = ${GROUND_SHADOW.toFixed(3)};
 const float GROUND_SHADOW_LEVEL = ${GROUND_SHADOW_LEVEL.toFixed(3)};
 
@@ -289,8 +296,10 @@ vec3 slopeAt(vec3 p) {
 
 void main() {
   vec3 rd = normalize(vWorld - camPos);
-  float sceneZ = texture2D(depthMap, gl_FragCoord.xy / screenSize).r;
-  float tScene = sceneZ > 0.0 ? sceneZ / max(dot(rd, camForward), 0.001) : 1.0e6;
+  vec2 screenUv = gl_FragCoord.xy / screenSize;
+  float sceneZ = texture2D(depthMap, screenUv).r;
+  float ahead = max(dot(rd, camForward), 0.001);
+  float tScene = sceneZ > 0.0 ? sceneZ / ahead : 1.0e6;
 
   vec3 inv = 1.0 / rd;
   vec3 ta = (fillMin - camPos) * inv;
@@ -373,6 +382,11 @@ void main() {
       color = mix(tint.rgb * shadeTint, mix(tint.rgb, vec3(1.0), LIT_LIFT) * LIT_LEVEL, lit);
       color *= 1.0 - crease * CREASE_SHADE;
       color = mix(color, rimColor, rim * (1.0 - 0.5 * lit));
+      float ghostZ = texture2D(ghostMap, screenUv).r;
+      if (ghostZ > 0.0 && ghostZ <= sceneZ + GHOST_DEPTH_SLACK && ghostZ / ahead > tSurface) {
+        float pale = smoothstep(0.25, 0.4, dot(tint.rgb, vec3(0.3, 0.6, 0.1)));
+        color = mix(mix(tint.rgb, vec3(1.0), GHOST_LIFT), tint.rgb * GHOST_SHADE, pale);
+      }
       float heat = smoothstep(HEAT_LOW - 0.03, HEAT_LOW + 0.03, tint.a) + smoothstep(HEAT_HIGH - 0.03, HEAT_HIGH + 0.03, tint.a);
       color += tint.rgb * heat * HEAT_GLOW;
       float fog = clamp((tSurface - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
@@ -395,6 +409,27 @@ void main() {
   vec3 smokeLight = pow(color, vec3(2.2)) * cover;
   vec3 shadowLight = pow(groundShade, vec3(2.2)) * shadow * (1.0 - cover);
   gl_FragColor = vec4(smokeLight + shadowLight, alpha);
+}`;
+
+Effect.ShadersStore["smokeGhostVertexShader"] = `
+precision highp float;
+attribute vec3 position;
+#include<instancesDeclaration>
+uniform mat4 view;
+uniform mat4 viewProjection;
+varying float vDepth;
+void main() {
+#include<instancesVertex>
+  vec4 placed = finalWorld * vec4(position, 1.0);
+  vDepth = (view * placed).z;
+  gl_Position = viewProjection * placed;
+}`;
+
+Effect.ShadersStore["smokeGhostFragmentShader"] = `
+precision highp float;
+varying float vDepth;
+void main() {
+  gl_FragColor = vec4(vDepth, 0.0, 0.0, 1.0);
 }`;
 
 class DensityGrid {
@@ -532,6 +567,8 @@ export class SmokeVolume {
   private readonly fineTexture: RawTexture3D;
   private readonly tintTexture: RawTexture3D;
   private readonly material: ShaderMaterial;
+  private readonly ghostMaterial: ShaderMaterial;
+  private readonly ghostTarget: RenderTargetTexture;
   private readonly mesh: Mesh;
   private readonly origin = new Vector3();
   private readonly fineOrigin = new Vector3();
@@ -599,7 +636,7 @@ export class SmokeVolume {
           "screenSize",
           "pixelAngle",
         ],
-        samplers: ["coarseTex", "fineTex", "tintTex", "noiseTex", "depthMap"],
+        samplers: ["coarseTex", "fineTex", "tintTex", "noiseTex", "depthMap", "ghostMap"],
         needAlphaBlending: true,
       },
     );
@@ -610,6 +647,32 @@ export class SmokeVolume {
     this.material.setTexture("tintTex", this.tintTexture);
     this.material.setTexture("noiseTex", noise);
     this.material.setTexture("depthMap", depthRenderer.getDepthMap());
+
+    this.ghostMaterial = new ShaderMaterial(
+      "smokeGhost",
+      scene,
+      { vertex: "smokeGhost", fragment: "smokeGhost" },
+      { attributes: ["position"], uniforms: ["world", "view", "viewProjection"] },
+    );
+    this.ghostTarget = new RenderTargetTexture(
+      "smokeGhost",
+      { ratio: 1 },
+      scene,
+      false,
+      true,
+      Constants.TEXTURETYPE_HALF_FLOAT,
+      false,
+      Texture.NEAREST_SAMPLINGMODE,
+      true,
+      false,
+      false,
+      Constants.TEXTUREFORMAT_R,
+    );
+    this.ghostTarget.activeCamera = camera;
+    this.ghostTarget.clearColor = new Color4(0, 0, 0, 0);
+    this.ghostTarget.renderList = [];
+    scene.customRenderTargets.push(this.ghostTarget);
+    this.material.setTexture("ghostMap", this.ghostTarget);
     this.material.setColor3("fogColor", fogColor);
     this.material.setColor3("shadeTint", new Color3(0.74, 0.69, 0.75));
     this.material.setColor3("rimColor", new Color3(1, 0.93, 0.84));
@@ -635,6 +698,11 @@ export class SmokeVolume {
     this.mesh.alwaysSelectAsActiveMesh = true;
     this.mesh.alphaIndex = 10;
     this.mesh.setEnabled(false);
+  }
+
+  revealInside(meshes: Mesh[]): void {
+    for (const mesh of meshes) this.ghostTarget.renderList?.push(mesh);
+    this.ghostTarget.setMaterialForRendering(meshes, this.ghostMaterial);
   }
 
   update(field: PuffField, view: VolumeView, dt: number): void {
