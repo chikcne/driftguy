@@ -645,10 +645,21 @@ const SPAWN_TABLE: SpawnWeights[] = [
   { kind: "interceptor", from: 230, weight: 1.3 },
 ];
 
-const SPAWN_RING_MIN = 85;
-const SPAWN_RING_MAX = 105;
-const RECYCLE_DISTANCE = 175;
-const SPAWN_COOLDOWN = 0.1;
+const SPAWN_RING_MIN = 115;
+const SPAWN_RING_MAX = 140;
+const RECYCLE_DISTANCE = 215;
+const WAVE_FIRST_DELAY = 0.6;
+const WAVE_INTERVAL_START = 5.4;
+const WAVE_INTERVAL_MIN = 3.0;
+const WAVE_INTERVAL_RAMP = 300;
+const WAVE_BURST_DURATION = 1.6;
+const WAVE_MIN_STEP = 0.06;
+const WAVE_MAX_STEP = 0.28;
+const WAVE_TWO_SIDE_SHARE = 0.75;
+const WAVE_STRAGGLER_CHANCE = 0.1;
+const WAVE_MIN_SHIFT = 0.7;
+const STRAY_INTERVAL_MIN = 7;
+const STRAY_INTERVAL_MAX = 13;
 const WAR_PARTY_INTERVAL = 60;
 const WAR_PARTY_WARNING = 4;
 const WAR_PARTY_SPREAD = 0.22;
@@ -656,12 +667,29 @@ const BOSS_INTERVAL = 150;
 const BOSS_WARNING = 6;
 const THREAT_ARRIVAL_DISTANCE = 42;
 const AHEAD_BIAS = 0.55;
-const SCREEN_LEFT_BEARING = -Math.PI / 2;
-const SCREEN_RIGHT_BEARING = Math.PI / 2;
-const LEFT_SIDE_SHARE = 0.8;
-const SIDE_SPREAD = 0.6;
 const HP_GROWTH_SECONDS = 140;
 const DAMAGE_GROWTH_SECONDS = 420;
+
+interface WaveSector {
+  center: number;
+  spread: number;
+}
+
+// Corner sectors span two adjacent sides plus the corner between them (e.g. bottom, bottom-left, left).
+const CORNER_SECTORS: readonly WaveSector[] = [
+  { center: Math.PI * 0.25, spread: Math.PI * 0.25 },
+  { center: Math.PI * 0.75, spread: Math.PI * 0.25 },
+  { center: -Math.PI * 0.75, spread: Math.PI * 0.25 },
+  { center: -Math.PI * 0.25, spread: Math.PI * 0.25 },
+];
+
+// Single-side sectors focus a wave onto one edge of the screen.
+const SIDE_SECTORS: readonly WaveSector[] = [
+  { center: 0, spread: 0.42 },
+  { center: Math.PI * 0.5, spread: 0.42 },
+  { center: Math.PI, spread: 0.42 },
+  { center: -Math.PI * 0.5, spread: 0.42 },
+];
 
 export type ThreatKind = "party" | "boss";
 
@@ -677,13 +705,28 @@ export interface Threat {
 export class Spawner {
   readonly threats: Threat[] = [];
   onThreat: ((threat: Threat) => void) | null = null;
-  private cooldown = 0;
+  private waveBearing = CORNER_SECTORS[0].center;
+  private waveSpread = CORNER_SECTORS[0].spread;
+  private waveTimer = WAVE_FIRST_DELAY;
+  private waveSpawnTimer = 0;
+  private waveStep = 0.2;
+  private waveTotal = 0;
+  private readonly waveAngles: number[] = [];
+  private strayTimer = randRange(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX);
   private nextWarParty = WAR_PARTY_INTERVAL;
   private nextBoss = BOSS_INTERVAL;
 
   reset(): void {
     this.threats.length = 0;
-    this.cooldown = 0;
+    const initial = CORNER_SECTORS[Math.floor(Math.random() * CORNER_SECTORS.length)];
+    this.waveBearing = initial.center;
+    this.waveSpread = initial.spread;
+    this.waveTimer = WAVE_FIRST_DELAY;
+    this.waveSpawnTimer = 0;
+    this.waveStep = 0.2;
+    this.waveTotal = 0;
+    this.waveAngles.length = 0;
+    this.strayTimer = randRange(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX);
     this.nextWarParty = WAR_PARTY_INTERVAL;
     this.nextBoss = BOSS_INTERVAL;
   }
@@ -699,18 +742,16 @@ export class Spawner {
 
     for (const enemy of enemies.active) {
       if (Math.abs(enemy.x - car.x) < RECYCLE_DISTANCE && Math.abs(enemy.z - car.z) < RECYCLE_DISTANCE) continue;
-      const angle = this.pickSideAngle();
+      const angle = this.waveBearing + randSigned(this.waveSpread);
       const distance = randRange(SPAWN_RING_MIN, SPAWN_RING_MAX);
       enemy.x = car.x + Math.sin(angle) * distance;
       enemy.z = car.z + Math.cos(angle) * distance;
       enemy.heading = angle + Math.PI;
     }
 
-    this.cooldown -= dt;
-    if (this.cooldown <= 0 && enemies.active.length < desired) {
-      this.cooldown = SPAWN_COOLDOWN;
-      this.spawnAt(enemies, this.pickKind(time), car, this.pickSideAngle(), hpScale);
-    }
+    this.updateWaves(dt, time, desired, car, enemies, hpScale);
+    this.updateStragglers(dt, time, desired, car, enemies, hpScale);
+
     if (time >= this.nextWarParty - WAR_PARTY_WARNING) {
       this.nextWarParty += WAR_PARTY_INTERVAL;
       this.announce("party", WAR_PARTY_WARNING, Math.min(26, 6 + Math.floor(time / 25)), car);
@@ -720,6 +761,88 @@ export class Spawner {
       this.announce("boss", BOSS_WARNING, 1, car);
     }
     this.updateThreats(dt, car, enemies, hpScale);
+  }
+
+  private updateWaves(dt: number, time: number, desired: number, car: CarBody, enemies: EnemySystem, hpScale: number): void {
+    if (this.waveAngles.length > 0) {
+      this.waveSpawnTimer -= dt;
+      while (this.waveSpawnTimer <= 0 && this.waveAngles.length > 0) {
+        this.waveSpawnTimer += this.waveStep;
+        const baseAngle = this.waveAngles.pop()!;
+        if (enemies.active.length >= MAX_ENEMIES - 15) continue;
+        const straggler = this.waveTotal >= 4 && Math.random() < WAVE_STRAGGLER_CHANCE;
+        const angle = straggler ? this.pickStragglerAngle() : baseAngle;
+        this.spawnAt(enemies, this.pickKind(time), car, angle, hpScale);
+      }
+      return;
+    }
+
+    this.waveTimer -= dt;
+    if (enemies.active.length <= Math.max(1, Math.floor(desired * 0.2))) {
+      this.waveTimer = Math.min(this.waveTimer, 1.0);
+    }
+    if (this.waveTimer > 0) return;
+
+    const deficit = Math.ceil(desired - enemies.active.length);
+    const minWave = Math.min(3, Math.ceil(desired));
+    if (deficit < minWave && enemies.active.length > 0) {
+      this.waveTimer = 0.5;
+      return;
+    }
+
+    const room = MAX_ENEMIES - 20 - enemies.active.length;
+    if (room <= 0) {
+      this.waveTimer = 0.6;
+      return;
+    }
+
+    const sector = this.pickNextSector();
+    this.waveBearing = sector.center;
+    this.waveSpread = sector.spread;
+
+    const targetWave = Math.max(minWave, Math.min(deficit, Math.ceil(desired * 0.65 + 1)));
+    const count = clamp(targetWave, 1, Math.min(22, room));
+    this.waveTotal = count;
+    this.waveStep = clamp(WAVE_BURST_DURATION / count, WAVE_MIN_STEP, WAVE_MAX_STEP);
+    this.waveSpawnTimer = 0;
+
+    // Stratify across the 1-2 side sector so the wave spans its edges cleanly, then shuffle arrival order.
+    this.waveAngles.length = 0;
+    const jitter = 0.5 / count;
+    for (let i = 0; i < count; i++) {
+      const slot = clamp(((i + 0.5) / count) * 2 - 1 + randSigned(jitter), -1, 1);
+      this.waveAngles.push(this.waveBearing + slot * this.waveSpread);
+    }
+    for (let i = this.waveAngles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = this.waveAngles[i];
+      this.waveAngles[i] = this.waveAngles[j];
+      this.waveAngles[j] = tmp;
+    }
+
+    const ramp = clamp(time / WAVE_INTERVAL_RAMP, 0, 1);
+    this.waveTimer = lerp(WAVE_INTERVAL_START, WAVE_INTERVAL_MIN, ramp);
+  }
+
+  private updateStragglers(dt: number, time: number, desired: number, car: CarBody, enemies: EnemySystem, hpScale: number): void {
+    this.strayTimer -= dt;
+    if (this.strayTimer > 0) return;
+    this.strayTimer = randRange(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX);
+    if (enemies.active.length >= desired) return;
+    this.spawnAt(enemies, this.pickKind(time), car, this.pickStragglerAngle(), hpScale);
+  }
+
+  private pickNextSector(): WaveSector {
+    const pool = Math.random() < WAVE_TWO_SIDE_SHARE ? CORNER_SECTORS : SIDE_SECTORS;
+    const fresh = pool.filter((sector) => Math.abs(wrapAngle(sector.center - this.waveBearing)) > WAVE_MIN_SHIFT);
+    const list = fresh.length > 0 ? fresh : pool;
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  private pickStragglerAngle(): number {
+    const clearHalf = this.waveSpread + 0.65;
+    const span = Math.max(0.4, TAU - clearHalf * 2);
+    return wrapAngle(this.waveBearing + clearHalf + Math.random() * span);
   }
 
   private announce(kind: ThreatKind, warning: number, size: number, car: CarBody): void {
@@ -771,11 +894,6 @@ export class Spawner {
   private spawnAt(enemies: EnemySystem, kind: EnemyKind, car: CarBody, angle: number, hpScale: number): Enemy | null {
     const distance = randRange(SPAWN_RING_MIN, SPAWN_RING_MAX);
     return enemies.spawn(kind, car.x + Math.sin(angle) * distance, car.z + Math.cos(angle) * distance, hpScale, angle + Math.PI);
-  }
-
-  private pickSideAngle(): number {
-    const side = Math.random() < LEFT_SIDE_SHARE ? SCREEN_LEFT_BEARING : SCREEN_RIGHT_BEARING;
-    return side + randSigned(SIDE_SPREAD);
   }
 
   private pickWaveAngle(car: CarBody): number {

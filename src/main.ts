@@ -6,6 +6,7 @@ import {
   Engine,
   FreeCamera,
   HemisphericLight,
+  Matrix,
   Scene,
   ShadowGenerator,
   StandardMaterial,
@@ -16,10 +17,10 @@ import { BARREL_SCRAP_PIECES, SCRAP_XP_MULTIPLIER, GunSystem, type PickupKind, P
 import { BlastPool, EXHAUST_HALF_SPAN, EXHAUST_HEIGHT, EXHAUST_REAR, ExhaustFlames, ShockRings, SkidTracks } from "./effects";
 import { type Enemy, EnemySystem, Spawner } from "./enemies";
 import { GibSystem } from "./gibs";
-import { Hud } from "./hud";
+import { type EnemyIndicator, Hud } from "./hud";
 import { Input } from "./input";
 import type { Shove } from "./loose";
-import { clamp, damp, lerp, randRange, randSigned, saturate } from "./math";
+import { clamp, damp, lerp, randRange, randSigned, saturate, wrapAngle } from "./math";
 import { buildPlayerCar, type PlayerCarModel, WHEEL_RADIUS } from "./models";
 import { PALETTE } from "./palette";
 import { PUFF, type PuffKind, type SmokeEnvironment, SmokeSystem } from "./smoke";
@@ -100,6 +101,11 @@ const VIGNETTE_WEIGHT = 1.4;
 const NITROUS_VIGNETTE_WEIGHT = 3.2;
 const BLOOM_WEIGHT = 0.3;
 const NITROUS_BLOOM_WEIGHT = 0.5;
+const INDICATOR_MAX_RANGE = 185;
+const INDICATOR_CLOSE_RANGE = 45;
+const INDICATOR_CLUSTER_ANGLE = 0.22;
+const INDICATOR_MAX_COUNT = 16;
+const INDICATOR_ONSCREEN_PAD = 14;
 
 function scrapNeeded(level: number): number {
   return Math.floor(3 + level * 3 + Math.pow(level, 1.7));
@@ -133,6 +139,9 @@ class Game {
   private readonly slope: Slope = { height: 0, pitch: 0, roll: 0 };
   private readonly cameraTarget = new Vector3();
   private readonly cameraForward = new Vector3();
+  private readonly viewProj = new Matrix();
+  private readonly trackedThreatEnemies = new Set<Enemy>();
+  private readonly enemyIndicators: EnemyIndicator[] = [];
   private readonly pendingBlasts: PendingBlast[] = [];
   private readonly smokeAccumulator = [0, 0, 0, 0];
   private readonly previousWheel = [0, 0, 0, 0, 0, 0, 0, 0];
@@ -319,7 +328,10 @@ class Game {
     this.hud.showPause(phase === "paused");
     this.hud.showPlaying(phase !== "title");
     if (phase !== "levelup") this.hud.closeLevelUp();
-    if (phase === "dying" || phase === "gameover") this.hud.setThreats([]);
+    if (phase === "dying" || phase === "gameover") {
+      this.hud.setThreats([]);
+      this.hud.setEnemyIndicators([]);
+    }
     this.hud.showGameOver(phase === "gameover" ? { seconds: this.time, kills: this.kills, level: this.level } : null);
   }
 
@@ -443,6 +455,7 @@ class Game {
       this.car.speed * 3.6,
       this.smokeOutput,
     );
+    this.hud.setEnemyIndicators(this.collectEnemyIndicators());
     this.hud.setThreats(this.spawner.threats);
     this.hud.setNitro(
       this.nitroTanks,
@@ -961,6 +974,84 @@ class Game {
       this.cameraTarget.y - SUN_DIRECTION.y * SHADOW_DISTANCE,
       this.cameraTarget.z - SUN_DIRECTION.z * SHADOW_DISTANCE,
     );
+  }
+
+  private collectEnemyIndicators(): EnemyIndicator[] {
+    const out = this.enemyIndicators;
+    out.length = 0;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    if (width < 10 || height < 10) return out;
+
+    const tracked = this.trackedThreatEnemies;
+    tracked.clear();
+    for (const threat of this.spawner.threats) {
+      for (const member of threat.members) tracked.add(member);
+    }
+
+    this.camera.getViewMatrix(true).multiplyToRef(this.camera.getProjectionMatrix(), this.viewProj);
+    const m = this.viewProj.m;
+    const halfW = width * 0.5;
+    const halfH = height * 0.5;
+
+    const candidates: { dist: number; ux: number; uy: number; angle: number }[] = [];
+    for (const enemy of this.enemies.active) {
+      if (tracked.has(enemy)) continue;
+      const dist = Math.hypot(enemy.x - this.car.x, enemy.z - this.car.z);
+      if (dist > INDICATOR_MAX_RANGE) continue;
+
+      const y = groundHeight(enemy.x, enemy.z) + 1;
+      const cx = enemy.x * m[0] + y * m[4] + enemy.z * m[8] + m[12];
+      const cy = enemy.x * m[1] + y * m[5] + enemy.z * m[9] + m[13];
+      const cw = enemy.x * m[3] + y * m[7] + enemy.z * m[11] + m[15];
+
+      if (cw > 0.001) {
+        const sx = ((cx / cw) * 0.5 + 0.5) * width;
+        const sy = (0.5 - (cy / cw) * 0.5) * height;
+        if (sx >= -INDICATOR_ONSCREEN_PAD && sx <= width + INDICATOR_ONSCREEN_PAD && sy >= -INDICATOR_ONSCREEN_PAD && sy <= height + INDICATOR_ONSCREEN_PAD) {
+          continue;
+        }
+      }
+
+      const dx = cx * halfW;
+      const dy = -cy * halfH;
+      const len = Math.hypot(dx, dy);
+      if (len < 0.0001) continue;
+      const ux = dx / len;
+      const uy = dy / len;
+      candidates.push({ dist, ux, uy, angle: Math.atan2(uy, ux) });
+    }
+
+    candidates.sort((a, b) => a.dist - b.dist);
+    const clusters: { sumX: number; sumY: number; angle: number; minDist: number; count: number }[] = [];
+    for (const cand of candidates) {
+      const weight = 1 / Math.max(20, cand.dist);
+      let bestIndex = -1;
+      let bestDiff = INDICATOR_CLUSTER_ANGLE;
+      for (let i = 0; i < clusters.length; i++) {
+        const diff = Math.abs(wrapAngle(cand.angle - clusters[i].angle));
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIndex = i;
+        }
+      }
+      if (bestIndex >= 0) {
+        const cl = clusters[bestIndex];
+        cl.sumX += cand.ux * weight;
+        cl.sumY += cand.uy * weight;
+        cl.angle = Math.atan2(cl.sumY, cl.sumX);
+        cl.minDist = Math.min(cl.minDist, cand.dist);
+        cl.count++;
+      } else if (clusters.length < INDICATOR_MAX_COUNT) {
+        clusters.push({ sumX: cand.ux * weight, sumY: cand.uy * weight, angle: cand.angle, minDist: cand.dist, count: 1 });
+      }
+    }
+
+    for (const cl of clusters) {
+      const closeness = saturate((INDICATOR_MAX_RANGE - cl.minDist) / (INDICATOR_MAX_RANGE - INDICATOR_CLOSE_RANGE));
+      out.push({ angle: cl.angle, closeness, pack: cl.count >= 3 });
+    }
+    return out;
   }
 
   private updateRumble(dt: number): void {

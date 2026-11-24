@@ -21,6 +21,13 @@ signal upgrade_picked(upgrade: Upgrades.UpgradeDef)
 const THREAT_SIDE_MARGIN := 78.0
 const THREAT_VERTICAL_MARGIN := 105.0
 const THREAT_TAG_OFFSET := 54.0
+const ENEMY_EDGE_SIDE_MARGIN := 30.0
+const ENEMY_EDGE_VERTICAL_MARGIN := 26.0
+const INDICATOR_MAX_RANGE := 185.0
+const INDICATOR_CLOSE_RANGE := 45.0
+const INDICATOR_CLUSTER_ANGLE := 0.22
+const INDICATOR_MAX_COUNT := 16
+const INDICATOR_ONSCREEN_PAD := 14.0
 const GROUND_FORESHORTENING := 0.8
 
 const LOCK_MODES := [1.0, 0.5, 0.0]
@@ -64,6 +71,7 @@ var _nitro_btn: Button
 var _auto_gas_btn: Button
 var _mute_btn: Button
 var _loadout_grid: GridContainer
+var _enemy_arrows: EnemyArrowsOverlay
 var _threats_layer: Control
 var _threat_markers: Array[ThreatMarker] = []
 
@@ -102,6 +110,46 @@ var _choices: Array[Upgrades.UpgradeDef] = []
 var _card_buttons: Array[Button] = []
 var _selected_card := 0
 var _pulse_clock := 0.0
+
+
+class EnemyArrowsOverlay:
+	extends Control
+	var arrows: Array[Dictionary] = []
+
+	func _draw() -> void:
+		for a in arrows:
+			var pos: Vector2 = a["pos"]
+			var angle: float = a["angle"]
+			var sc: float = a["scale"]
+			var alpha: float = a["alpha"]
+			var pack: bool = a["pack"]
+			draw_set_transform(pos, angle, Vector2(sc, sc))
+			var ink := Color(Palette.INK.r, Palette.INK.g, Palette.INK.b, alpha)
+			if pack:
+				var pw := 13.0
+				var ph := 16.0
+				var ox := -9.5
+				var ppts := PackedVector2Array([
+					Vector2(ox - pw * 0.5, -ph * 0.5),
+					Vector2(ox + pw * 0.5, 0.0),
+					Vector2(ox - pw * 0.5, ph * 0.5),
+					Vector2(ox - pw * 0.16, 0.0),
+				])
+				var amber := Color(Palette.CAR_STRIPE_ALT.r, Palette.CAR_STRIPE_ALT.g, Palette.CAR_STRIPE_ALT.b, alpha)
+				draw_colored_polygon(ppts, amber)
+				draw_polyline(PackedVector2Array([ppts[0], ppts[1], ppts[2], ppts[3], ppts[0]]), ink, 2.0, true)
+			var w := 18.0
+			var h := 21.0
+			var pts := PackedVector2Array([
+				Vector2(-w * 0.5, -h * 0.5),
+				Vector2(w * 0.5, 0.0),
+				Vector2(-w * 0.5, h * 0.5),
+				Vector2(-w * 0.16, 0.0),
+			])
+			var flame := Color(Palette.CAR_STRIPE.r, Palette.CAR_STRIPE.g, Palette.CAR_STRIPE.b, alpha)
+			draw_colored_polygon(pts, flame)
+			draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), ink, 2.2, true)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 class ThreatArrow:
@@ -189,8 +237,9 @@ func show_phase(phase: String) -> void:
 		touch_brake = false
 		touch_handbrake = false
 		touch_nitro_queued = false
-	if phase == "dying" or phase == "gameover":
+	if phase == "dying" or phase == "gameover" or phase == "title":
 		set_threats([], 0.0)
+		clear_enemy_indicators()
 
 
 func show_game_over_stats(seconds: float, kills: int, level: int) -> void:
@@ -337,6 +386,115 @@ func set_loadout(levels: Dictionary) -> void:
 		row.add_child(pips)
 
 		_loadout_grid.add_child(panel)
+
+
+func clear_enemy_indicators() -> void:
+	if _enemy_arrows == null or _enemy_arrows.arrows.is_empty():
+		return
+	_enemy_arrows.arrows.clear()
+	_enemy_arrows.queue_redraw()
+
+
+func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: Camera3D) -> void:
+	if _enemy_arrows == null or camera == null:
+		return
+	var vp_size := _root.get_viewport_rect().size
+	if vp_size.x < 10.0 or vp_size.y < 10.0:
+		return
+
+	var tracked := {}
+	for threat: EnemySystem.Threat in threats:
+		for member in threat.members:
+			tracked[member] = true
+
+	var half_w := vp_size.x * 0.5
+	var half_h := vp_size.y * 0.5
+	var reach_x := maxf(1.0, half_w - ENEMY_EDGE_SIDE_MARGIN)
+	var reach_y := maxf(1.0, half_h - ENEMY_EDGE_VERTICAL_MARGIN)
+	var inv_cam := camera.global_transform.affine_inverse()
+
+	var candidates: Array = []
+	for enemy: EnemySystem.Enemy in enemies:
+		if tracked.has(enemy):
+			continue
+		var ddx := enemy.x - car.x
+		var ddz := enemy.z - car.z
+		var dist := sqrt(ddx * ddx + ddz * ddz)
+		if dist > INDICATOR_MAX_RANGE:
+			continue
+
+		var world_pos := Vector3(enemy.x, DesertTerrain.ground_height(enemy.x, enemy.z) + 1.0, -enemy.z)
+		var cam_local := inv_cam * world_pos
+		var sx := 0.0
+		var sy := 0.0
+		if cam_local.z >= -0.5:
+			sx = cam_local.x
+			sy = -cam_local.y
+		else:
+			var proj := camera.unproject_position(world_pos)
+			if (
+				proj.x >= -INDICATOR_ONSCREEN_PAD
+				and proj.x <= vp_size.x + INDICATOR_ONSCREEN_PAD
+				and proj.y >= -INDICATOR_ONSCREEN_PAD
+				and proj.y <= vp_size.y + INDICATOR_ONSCREEN_PAD
+			):
+				continue
+			sx = proj.x - half_w
+			sy = proj.y - half_h
+
+		var slen := sqrt(sx * sx + sy * sy)
+		if slen < 0.0001:
+			continue
+		var ux := sx / slen
+		var uy := sy / slen
+		candidates.append([dist, ux, uy, atan2(uy, ux)])
+
+	candidates.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+
+	var clusters: Array = [] # [sum_x, sum_y, angle, min_dist, count]
+	for cand: Array in candidates:
+		var dist: float = cand[0]
+		var ux: float = cand[1]
+		var uy: float = cand[2]
+		var angle: float = cand[3]
+		var weight := 1.0 / maxf(20.0, dist)
+		var best_idx := -1
+		var best_diff := INDICATOR_CLUSTER_ANGLE
+		for i in clusters.size():
+			var diff := absf(SimMath.wrap_angle(angle - float(clusters[i][2])))
+			if diff < best_diff:
+				best_diff = diff
+				best_idx = i
+		if best_idx >= 0:
+			var cl: Array = clusters[best_idx]
+			cl[0] = float(cl[0]) + ux * weight
+			cl[1] = float(cl[1]) + uy * weight
+			cl[2] = atan2(float(cl[1]), float(cl[0]))
+			cl[3] = minf(float(cl[3]), dist)
+			cl[4] = int(cl[4]) + 1
+		elif clusters.size() < INDICATOR_MAX_COUNT:
+			clusters.append([ux * weight, uy * weight, angle, dist, 1])
+
+	_enemy_arrows.arrows.clear()
+	for cl: Array in clusters:
+		var angle: float = cl[2]
+		var min_dist: float = cl[3]
+		var count: int = cl[4]
+		var dir_x := cos(angle)
+		var dir_y := sin(angle)
+		var reach := minf(reach_x / maxf(absf(dir_x), 0.0001), reach_y / maxf(absf(dir_y), 0.0001))
+		var closeness := SimMath.saturate((INDICATOR_MAX_RANGE - min_dist) / (INDICATOR_MAX_RANGE - INDICATOR_CLOSE_RANGE))
+		var pack := count >= 3
+		var sc := (0.76 + 0.38 * closeness) * (1.15 if pack else 1.0)
+		var alpha := 0.55 + 0.41 * closeness
+		_enemy_arrows.arrows.append({
+			"pos": Vector2(half_w + dir_x * reach, half_h + dir_y * reach),
+			"angle": angle,
+			"scale": sc,
+			"alpha": alpha,
+			"pack": pack,
+		})
+	_enemy_arrows.queue_redraw()
 
 
 func set_threats(threats: Array, display_roll: float) -> void:
@@ -550,6 +708,12 @@ func _build_playing_hud() -> void:
 	_hud_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_hud_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_hud_layer)
+
+	# Approaching off-screen enemy arrows behind major threat markers and HUD controls
+	_enemy_arrows = EnemyArrowsOverlay.new()
+	_enemy_arrows.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_enemy_arrows.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud_layer.add_child(_enemy_arrows)
 
 	# Threat arrows layer behind HUD controls
 	_threats_layer = Control.new()

@@ -25,7 +25,15 @@ const THREAT_LABEL: Record<ThreatKind, string> = {
 const THREAT_SIDE_MARGIN = 96;
 const THREAT_VERTICAL_MARGIN = 132;
 const THREAT_TAG_OFFSET = 62;
+const ENEMY_EDGE_SIDE_MARGIN = 26;
+const ENEMY_EDGE_VERTICAL_MARGIN = 24;
 const GROUND_FORESHORTENING = 0.8;
+
+export interface EnemyIndicator {
+  angle: number;
+  closeness: number;
+  pack: boolean;
+}
 
 interface ThreatMarker {
   root: HTMLElement;
@@ -79,12 +87,14 @@ export class Hud {
   private readonly padStatus = element("pad-status");
   private readonly padControls = element("pad-controls");
   private readonly keyControls = element("key-controls");
+  private readonly enemyArrowsLayer = element("enemy-arrows");
   private readonly threats = element("threats");
   private readonly rush = element("rush");
   private readonly nitro = element("nitro");
   private readonly nitroFill = element("nitro-fill");
   private readonly nitroTanks = element("nitro-tanks");
   private readonly nitroKey = element("nitro-key");
+  private readonly enemyArrows: HTMLElement[] = [];
   private readonly threatMarkers: ThreatMarker[] = [];
   private choices: UpgradeDef[] = [];
   private selected = 0;
@@ -184,6 +194,27 @@ export class Hud {
     this.loadout.replaceChildren(...items);
   }
 
+  setEnemyIndicators(indicators: readonly EnemyIndicator[]): void {
+    const halfWidth = window.innerWidth / 2;
+    const halfHeight = window.innerHeight / 2;
+    const reachX = Math.max(1, halfWidth - ENEMY_EDGE_SIDE_MARGIN);
+    const reachY = Math.max(1, halfHeight - ENEMY_EDGE_VERTICAL_MARGIN);
+    for (let i = 0; i < indicators.length; i++) {
+      const ind = indicators[i];
+      const arrow = this.enemyArrows[i] ?? this.addEnemyArrow();
+      const dirX = Math.cos(ind.angle);
+      const dirY = Math.sin(ind.angle);
+      const reach = Math.min(reachX / Math.max(Math.abs(dirX), 0.0001), reachY / Math.max(Math.abs(dirY), 0.0001));
+      const scale = (0.76 + 0.38 * ind.closeness) * (ind.pack ? 1.15 : 1);
+      const opacity = 0.55 + 0.41 * ind.closeness;
+      arrow.hidden = false;
+      arrow.classList.toggle("pack", ind.pack);
+      arrow.style.transform = `translate(${(halfWidth + dirX * reach).toFixed(1)}px, ${(halfHeight + dirY * reach).toFixed(1)}px) rotate(${ind.angle.toFixed(3)}rad) scale(${scale.toFixed(2)})`;
+      arrow.style.opacity = opacity.toFixed(2);
+    }
+    for (let i = indicators.length; i < this.enemyArrows.length; i++) this.enemyArrows[i].hidden = true;
+  }
+
   setThreats(threats: readonly Threat[]): void {
     const halfWidth = window.innerWidth / 2;
     const halfHeight = window.innerHeight / 2;
@@ -258,6 +289,15 @@ export class Hud {
   confirmSelection(): void {
     const choice = this.choices[this.selected];
     if (choice) this.onPick?.(choice);
+  }
+
+  private addEnemyArrow(): HTMLElement {
+    const arrow = document.createElement("div");
+    arrow.className = "enemy-arrow";
+    arrow.hidden = true;
+    this.enemyArrowsLayer.append(arrow);
+    this.enemyArrows.push(arrow);
+    return arrow;
   }
 
   private addThreatMarker(): ThreatMarker {

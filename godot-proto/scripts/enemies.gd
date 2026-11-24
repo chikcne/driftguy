@@ -156,10 +156,21 @@ class Threat:
 
 class Spawner:
 	extends RefCounted
-	const SPAWN_RING_MIN := 85.0
-	const SPAWN_RING_MAX := 105.0
-	const RECYCLE_DISTANCE := 175.0
-	const SPAWN_COOLDOWN := 0.1
+	const SPAWN_RING_MIN := 115.0
+	const SPAWN_RING_MAX := 140.0
+	const RECYCLE_DISTANCE := 215.0
+	const WAVE_FIRST_DELAY := 0.6
+	const WAVE_INTERVAL_START := 5.4
+	const WAVE_INTERVAL_MIN := 3.0
+	const WAVE_INTERVAL_RAMP := 300.0
+	const WAVE_BURST_DURATION := 1.6
+	const WAVE_MIN_STEP := 0.06
+	const WAVE_MAX_STEP := 0.28
+	const WAVE_TWO_SIDE_SHARE := 0.75
+	const WAVE_STRAGGLER_CHANCE := 0.1
+	const WAVE_MIN_SHIFT := 0.7
+	const STRAY_INTERVAL_MIN := 7.0
+	const STRAY_INTERVAL_MAX := 13.0
 	const WAR_PARTY_INTERVAL := 60.0
 	const WAR_PARTY_WARNING := 4.0
 	const WAR_PARTY_SPREAD := 0.22
@@ -167,12 +178,24 @@ class Spawner:
 	const BOSS_WARNING := 6.0
 	const THREAT_ARRIVAL_DISTANCE := 42.0
 	const AHEAD_BIAS := 0.55
-	const SCREEN_LEFT_BEARING := -PI * 0.5
-	const SCREEN_RIGHT_BEARING := PI * 0.5
-	const LEFT_SIDE_SHARE := 0.8
-	const SIDE_SPREAD := 0.6
 	const HP_GROWTH_SECONDS := 140.0
 	const DAMAGE_GROWTH_SECONDS := 420.0
+
+	# Corner sectors span two adjacent sides plus the corner between them (e.g. bottom, bottom-left, left).
+	const CORNER_SECTORS := [
+		[PI * 0.25, PI * 0.25],
+		[PI * 0.75, PI * 0.25],
+		[-PI * 0.75, PI * 0.25],
+		[-PI * 0.25, PI * 0.25],
+	]
+
+	# Single-side sectors focus a wave onto one edge of the screen.
+	const SIDE_SECTORS := [
+		[0.0, 0.42],
+		[PI * 0.5, 0.42],
+		[PI, 0.42],
+		[-PI * 0.5, 0.42],
+	]
 
 	const SPAWN_TABLE := [
 		["bike", 0.0, 3.0],
@@ -183,13 +206,28 @@ class Spawner:
 
 	var threats: Array[Threat] = []
 	var on_threat: Callable = Callable()
-	var _cooldown := 0.0
+	var _wave_bearing := PI * 0.25
+	var _wave_spread := PI * 0.25
+	var _wave_timer := WAVE_FIRST_DELAY
+	var _wave_spawn_timer := 0.0
+	var _wave_step := 0.2
+	var _wave_total := 0
+	var _wave_angles: Array[float] = []
+	var _stray_timer := 10.0
 	var _next_war_party := WAR_PARTY_INTERVAL
 	var _next_boss := BOSS_INTERVAL
 
 	func reset() -> void:
 		threats.clear()
-		_cooldown = 0.0
+		var initial: Array = CORNER_SECTORS[randi() % CORNER_SECTORS.size()]
+		_wave_bearing = initial[0]
+		_wave_spread = initial[1]
+		_wave_timer = WAVE_FIRST_DELAY
+		_wave_spawn_timer = 0.0
+		_wave_step = 0.2
+		_wave_total = 0
+		_wave_angles.clear()
+		_stray_timer = randf_range(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX)
 		_next_war_party = WAR_PARTY_INTERVAL
 		_next_boss = BOSS_INTERVAL
 
@@ -204,16 +242,14 @@ class Spawner:
 		for enemy in enemies.active:
 			if absf(enemy.x - car.x) < RECYCLE_DISTANCE and absf(enemy.z - car.z) < RECYCLE_DISTANCE:
 				continue
-			var angle := _pick_side_angle()
+			var angle := _wave_bearing + SimMath.rand_signed(_wave_spread)
 			var distance := randf_range(SPAWN_RING_MIN, SPAWN_RING_MAX)
 			enemy.x = car.x + sin(angle) * distance
 			enemy.z = car.z + cos(angle) * distance
 			enemy.heading = angle + PI
 
-		_cooldown -= dt
-		if _cooldown <= 0.0 and float(enemies.active.size()) < desired:
-			_cooldown = SPAWN_COOLDOWN
-			_spawn_at(enemies, _pick_kind(time_s), car, _pick_side_angle(), hp_scale)
+		_update_waves(dt, time_s, desired, car, enemies, hp_scale)
+		_update_stragglers(dt, time_s, desired, car, enemies, hp_scale)
 
 		if time_s >= _next_war_party - WAR_PARTY_WARNING:
 			_next_war_party += WAR_PARTY_INTERVAL
@@ -223,6 +259,84 @@ class Spawner:
 			_announce("boss", BOSS_WARNING, 1, car)
 
 		_update_threats(dt, car, enemies, hp_scale)
+
+	func _update_waves(dt: float, time_s: float, desired: float, car: CarBody, enemies: EnemySystem, hp_scale: float) -> void:
+		if not _wave_angles.is_empty():
+			_wave_spawn_timer -= dt
+			while _wave_spawn_timer <= 0.0 and not _wave_angles.is_empty():
+				_wave_spawn_timer += _wave_step
+				var base_angle: float = _wave_angles.pop_back()
+				if enemies.active.size() >= MAX_ENEMIES - 15:
+					continue
+				var straggler := _wave_total >= 4 and randf() < WAVE_STRAGGLER_CHANCE
+				var angle := _pick_straggler_angle() if straggler else base_angle
+				_spawn_at(enemies, _pick_kind(time_s), car, angle, hp_scale)
+			return
+
+		_wave_timer -= dt
+		if enemies.active.size() <= maxi(1, int(floor(desired * 0.2))):
+			_wave_timer = minf(_wave_timer, 1.0)
+		if _wave_timer > 0.0:
+			return
+
+		var deficit := int(ceil(desired - float(enemies.active.size())))
+		var min_wave := mini(3, int(ceil(desired)))
+		if deficit < min_wave and not enemies.active.is_empty():
+			_wave_timer = 0.5
+			return
+
+		var room := MAX_ENEMIES - 20 - enemies.active.size()
+		if room <= 0:
+			_wave_timer = 0.6
+			return
+
+		var sector := _pick_next_sector()
+		_wave_bearing = sector[0]
+		_wave_spread = sector[1]
+
+		var target_wave := maxi(min_wave, mini(deficit, int(ceil(desired * 0.65 + 1.0))))
+		var count := clampi(target_wave, 1, mini(22, room))
+		_wave_total = count
+		_wave_step = clampf(WAVE_BURST_DURATION / float(count), WAVE_MIN_STEP, WAVE_MAX_STEP)
+		_wave_spawn_timer = 0.0
+
+		# Stratify across the 1-2 side sector so the wave spans its edges cleanly, then shuffle arrival order.
+		_wave_angles.clear()
+		var jitter := 0.5 / float(count)
+		for i in count:
+			var slot := clampf(((float(i) + 0.5) / float(count)) * 2.0 - 1.0 + SimMath.rand_signed(jitter), -1.0, 1.0)
+			_wave_angles.append(_wave_bearing + slot * _wave_spread)
+		for i in range(_wave_angles.size() - 1, 0, -1):
+			var j := randi() % (i + 1)
+			var tmp := _wave_angles[i]
+			_wave_angles[i] = _wave_angles[j]
+			_wave_angles[j] = tmp
+
+		var ramp := clampf(time_s / WAVE_INTERVAL_RAMP, 0.0, 1.0)
+		_wave_timer = lerpf(WAVE_INTERVAL_START, WAVE_INTERVAL_MIN, ramp)
+
+	func _update_stragglers(dt: float, time_s: float, desired: float, car: CarBody, enemies: EnemySystem, hp_scale: float) -> void:
+		_stray_timer -= dt
+		if _stray_timer > 0.0:
+			return
+		_stray_timer = randf_range(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX)
+		if float(enemies.active.size()) >= desired:
+			return
+		_spawn_at(enemies, _pick_kind(time_s), car, _pick_straggler_angle(), hp_scale)
+
+	func _pick_next_sector() -> Array:
+		var pool: Array = CORNER_SECTORS if randf() < WAVE_TWO_SIDE_SHARE else SIDE_SECTORS
+		var fresh: Array = []
+		for sector in pool:
+			if absf(SimMath.wrap_angle(sector[0] - _wave_bearing)) > WAVE_MIN_SHIFT:
+				fresh.append(sector)
+		var list: Array = fresh if not fresh.is_empty() else pool
+		return list[randi() % list.size()]
+
+	func _pick_straggler_angle() -> float:
+		var clear_half := _wave_spread + 0.65
+		var span := maxf(0.4, TAU - clear_half * 2.0)
+		return SimMath.wrap_angle(_wave_bearing + clear_half + randf() * span)
 
 	func _announce(kind: String, warning: float, size: int, car: CarBody) -> void:
 		var threat := Threat.new()
@@ -277,10 +391,6 @@ class Spawner:
 	func _spawn_at(enemies: EnemySystem, kind: String, car: CarBody, angle: float, hp_scale: float) -> Enemy:
 		var distance := randf_range(SPAWN_RING_MIN, SPAWN_RING_MAX)
 		return enemies.spawn(kind, car.x + sin(angle) * distance, car.z + cos(angle) * distance, hp_scale, angle + PI)
-
-	func _pick_side_angle() -> float:
-		var side := SCREEN_LEFT_BEARING if randf() < LEFT_SIDE_SHARE else SCREEN_RIGHT_BEARING
-		return side + SimMath.rand_signed(SIDE_SPREAD)
 
 	func _pick_wave_angle(car: CarBody) -> float:
 		if car.speed > 8.0 and randf() < AHEAD_BIAS:

@@ -509,6 +509,7 @@ func _simulate(dt: float) -> void:
 		_smoke_output,
 		Engine.get_frames_per_second(),
 	)
+	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _car, _camera)
 	_hud.set_threats(_spawner.threats, _stabilizer.display_roll)
 	var nitro_fill := 0.0
 	if _nitro_burn > 0.0:
