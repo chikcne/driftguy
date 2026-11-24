@@ -22,7 +22,12 @@ var _material: StandardMaterial3D
 
 
 func build(shared_material: StandardMaterial3D) -> void:
-	_material = shared_material
+	# Write stencil=1 on the player car so occluded enemy silhouettes do not bleed through it
+	_material = shared_material.duplicate()
+	_material.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
+	_material.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
+	_material.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
+	_material.stencil_reference = 1
 
 	lean = Node3D.new()
 	lean.name = "CarLean"

@@ -1,11 +1,14 @@
 shader_type spatial;
-render_mode unshaded, depth_test_disabled, depth_draw_never, cull_back, blend_mix;
+render_mode unshaded, depth_test_disabled, depth_draw_never, cull_back, blend_mix, fog_disabled;
+stencil_mode read, write, compare_not_equal, 1;
 
-// Renders a grey silhouette whenever an enemy is occluded behind scenery or smoke clouds.
-// Uses view-space linearized depth so it is immune to Reverse-Z depth encoding on Metal/Vulkan.
+// Renders a flat single-pass grey silhouette whenever an enemy is occluded behind
+// scenery or smoke clouds. Uses stencil=1 (written by visible enemies, the player car,
+// and the first occluded silhouette fragment) to prevent self-occlusion and overlapping
+// alpha stacking, matching the flat 2D ghost veil in the BabylonJS version.
 
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
-uniform vec4 veil_color : source_color = vec4(0.50, 0.48, 0.53, 0.68);
+uniform vec4 veil_color : source_color = vec4(0.50, 0.48, 0.53, 0.70);
 uniform float depth_slack = 0.5;
 
 void fragment() {

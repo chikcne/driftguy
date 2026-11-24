@@ -323,8 +323,13 @@ func setup(base_material: StandardMaterial3D) -> void:
 		"rig": EnemySpec.new("rig", 3.6, 900.0, 22.0, 6.0, 0.8, 1.8, 30.0, 45.0, 5.4, 1.5, 4.0, 0.25, 2.0, 1.1),
 	}
 
-	# Duplicate base material and attach the occluded grey silhouette next_pass!
+	# Duplicate base material: write stencil=1 on visible enemy fragments so the
+	# occluded silhouette next_pass never self-occludes or stacks alpha layers.
 	var enemy_mat: StandardMaterial3D = base_material.duplicate()
+	enemy_mat.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
+	enemy_mat.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
+	enemy_mat.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
+	enemy_mat.stencil_reference = 1
 	var sil_shader: Shader = load("res://shaders/enemy_silhouette.gdshader")
 	var sil_mat := ShaderMaterial.new()
 	sil_mat.shader = sil_shader
