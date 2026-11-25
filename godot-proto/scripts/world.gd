@@ -40,6 +40,27 @@ class Contact:
 	var nz: float = 0.0
 
 
+class AvoidanceResult:
+	extends RefCounted
+	var heading: float = 0.0
+	var speed_factor: float = 1.0
+	var side_bias: float = 0.0
+	var avoiding: bool = false
+
+
+const AVOID_ANGLES := [
+	0.0,
+	0.22, -0.22,
+	0.45, -0.45,
+	0.72, -0.72,
+	1.05, -1.05,
+	1.45, -1.45,
+	1.90, -1.90,
+	2.35, -2.35,
+]
+const AVOID_MAX_OBS := 48
+
+
 class BreakableBarrel:
 	extends RefCounted
 	var id: String
@@ -119,12 +140,18 @@ var _material: StandardMaterial3D
 var _center_cx := 999999
 var _center_cz := 999999
 var _resolve_callable: Callable
+var _avoid_obs_x := PackedFloat32Array()
+var _avoid_obs_z := PackedFloat32Array()
+var _avoid_obs_r := PackedFloat32Array()
 
 
 func setup(shared_material: StandardMaterial3D) -> void:
 	_material = shared_material
 	_props = Props.build_props()
 	_resolve_callable = Callable(self, "_resolve_obstruction")
+	_avoid_obs_x.resize(AVOID_MAX_OBS)
+	_avoid_obs_z.resize(AVOID_MAX_OBS)
+	_avoid_obs_r.resize(AVOID_MAX_OBS)
 
 	for prop_name: String in _props.keys():
 		var prop: Props.PropDef = _props[prop_name]
@@ -350,6 +377,162 @@ func _resolve_obstruction(body: LooseSystem.LooseBody, radius: float, out: Loose
 	out.hit = c.hit
 	out.nx = c.nx
 	out.nz = c.nz
+
+
+func steer_around_obstacles(
+	x: float,
+	z: float,
+	heading: float,
+	desired_heading: float,
+	radius: float,
+	speed: float,
+	mass: float,
+	turn_rate: float,
+	target_dist: float,
+	prev_side: float,
+	out: AvoidanceResult,
+) -> AvoidanceResult:
+	out.heading = desired_heading
+	out.speed_factor = 1.0
+	out.side_bias = prev_side
+	out.avoiding = false
+
+	var turn_pad := clampf(speed / maxf(0.6, turn_rate) * 0.25, 0.0, 7.0)
+	var base_look := clampf(radius * 2.5 + speed * 0.5 + turn_pad, 9.0, 26.0)
+	var lookahead := minf(base_look, maxf(radius + 1.5, target_dist))
+
+	var dfx := sin(desired_heading)
+	var dfz := cos(desired_heading)
+	var cfx := sin(heading)
+	var cfz := cos(heading)
+
+	var end_x1 := x + dfx * lookahead
+	var end_z1 := z + dfz * lookahead
+	var end_x2 := x + cfx * (lookahead * 0.75)
+	var end_z2 := z + cfz * (lookahead * 0.75)
+	var pad := radius + 5.0
+	var min_x := int(floor((minf(x, minf(end_x1, end_x2)) - pad) / COLLIDER_CELL))
+	var max_x := int(floor((maxf(x, maxf(end_x1, end_x2)) + pad) / COLLIDER_CELL))
+	var min_z := int(floor((minf(z, minf(end_z1, end_z2)) - pad) / COLLIDER_CELL))
+	var max_z := int(floor((maxf(z, maxf(end_z1, end_z2)) + pad) / COLLIDER_CELL))
+
+	var obs_count := 0
+	var root_hold_limit := mass * maxf(speed, 12.0) * 0.58
+	var max_range_sq := (lookahead + pad) * (lookahead + pad)
+
+	for gz in range(min_z, max_z + 1):
+		for gx in range(min_x, max_x + 1):
+			var key := Vector2i(gx, gz)
+			if _collider_grid.has(key):
+				var bucket: Array = _collider_grid[key]
+				for col: Collider in bucket:
+					if col.barrel != null and col.barrel.destroyed:
+						continue
+					var rx := col.x - x
+					var rz := col.z - z
+					if rx * rx + rz * rz > max_range_sq:
+						continue
+					if obs_count < AVOID_MAX_OBS:
+						var extra := 1.35 if col.barrel != null else 0.9
+						_avoid_obs_x[obs_count] = rx
+						_avoid_obs_z[obs_count] = rz
+						_avoid_obs_r[obs_count] = col.r + radius + extra
+						obs_count += 1
+			if _rooted_grid.has(key):
+				var rbucket: Array = _rooted_grid[key]
+				for plant: Rooted in rbucket:
+					if not plant.alive or plant.hold <= 0.0:
+						continue
+					# Heavy vehicles plow through weak plants; lighter ones steer around trees/cacti that bounce them
+					if plant.hold < root_hold_limit:
+						continue
+					var rx := plant.x - x
+					var rz := plant.z - z
+					if rx * rx + rz * rz > max_range_sq:
+						continue
+					if obs_count < AVOID_MAX_OBS:
+						_avoid_obs_x[obs_count] = rx
+						_avoid_obs_z[obs_count] = rz
+						_avoid_obs_r[obs_count] = plant.r + radius + 0.75
+						obs_count += 1
+
+	if obs_count == 0:
+		return out
+
+	# Fast path: if both the desired heading and immediate current heading are completely clear, keep going
+	var desired_free := _ray_free_dist(dfx, dfz, lookahead, obs_count)
+	var current_free := _ray_free_dist(cfx, cfz, lookahead * 0.65, obs_count)
+	if desired_free >= lookahead - 0.01 and current_free >= lookahead * 0.65 - 0.01:
+		return out
+
+	out.avoiding = true
+
+	var best_heading := desired_heading
+	var best_score := -INF
+	var best_free := 0.0
+	var best_offset := 0.0
+
+	for offset: float in AVOID_ANGLES:
+		var cand := SimMath.wrap_angle(desired_heading + offset)
+		var ux := sin(cand)
+		var uz := cos(cand)
+		var free_d := _ray_free_dist(ux, uz, lookahead, obs_count)
+		var clear_ratio := free_d / lookahead
+		var goal_align := cos(offset)
+		var turn_diff := absf(SimMath.wrap_angle(cand - heading))
+		var heading_align := cos(turn_diff)
+
+		var side_bonus := 0.0
+		if prev_side != 0.0 and offset != 0.0 and (offset * prev_side > 0.0):
+			side_bonus = 0.28
+
+		# Strongly prioritize unobstructed rays; among clear rays pick the one closest to the goal & current heading
+		var score := clear_ratio * 3.6 + goal_align * 1.15 + heading_align * 0.55 + side_bonus
+		if free_d >= lookahead - 0.01:
+			score += 0.9
+		if score > best_score:
+			best_score = score
+			best_heading = cand
+			best_free = free_d
+			best_offset = offset
+
+	out.heading = best_heading
+	if absf(best_offset) > 0.05:
+		out.side_bias = signf(best_offset)
+	elif prev_side == 0.0:
+		out.side_bias = 1.0 if SimMath.wrap_angle(best_heading - heading) >= 0.0 else -1.0
+
+	# Slow down smoothly when forced into a sharp turn or close to an obstacle
+	var turn_need := absf(SimMath.wrap_angle(best_heading - heading))
+	var tight := clampf(best_free / maxf(4.0, lookahead * 0.55), 0.35, 1.0)
+	var turn_slow := clampf(1.0 - maxf(0.0, turn_need - 0.55) * 0.38, 0.45, 1.0)
+	out.speed_factor = minf(tight, turn_slow)
+	return out
+
+
+func _ray_free_dist(ux: float, uz: float, max_dist: float, obs_count: int) -> float:
+	var best := max_dist
+	for i in obs_count:
+		var rx := _avoid_obs_x[i]
+		var rz := _avoid_obs_z[i]
+		var r := _avoid_obs_r[i]
+		var r_sq := r * r
+		var dist_sq := rx * rx + rz * rz
+		var proj := rx * ux + rz * uz
+		if dist_sq < r_sq:
+			# Already inside safety margin: block rays heading deeper into the obstacle, allow escape rays
+			if proj > -0.15:
+				return 0.0
+			continue
+		if proj <= 0.0 or proj - r >= best:
+			continue
+		var perp_sq := dist_sq - proj * proj
+		if perp_sq >= r_sq:
+			continue
+		var hit_d := proj - sqrt(r_sq - perp_sq)
+		if hit_d < best:
+			best = maxf(0.0, hit_d)
+	return best
 
 
 func _pick_scatter(rng: SimMath.SeededRng) -> String:

@@ -231,6 +231,8 @@ class Enemy:
 	var ai_state: int = AI_SETUP
 	var ai_timer: float = 0.0
 	var ai_side: float = 1.0
+	var avoid_side: float = 0.0
+	var avoid_timer: float = 0.0
 	var pipe_state: int = PIPE_IDLE
 	var pipe_timer: float = 0.0
 	var pipe_cooldown: float = 0.0
@@ -565,6 +567,7 @@ var _arms: SimMath.InstanceBatch
 var _pipes: SimMath.InstanceBatch
 var _sample := SmokeSystem.SmokeSample.new()
 var _contact := World.Contact.new()
+var _avoid := World.AvoidanceResult.new()
 var _shove := LooseSystem.ShoveResult.new()
 var _harm_dealt := 0.0
 
@@ -753,7 +756,7 @@ func update_enemies(
 		else:
 			enemy.blind = maxf(0.0, enemy.blind - BLIND_FADE * dt)
 
-		_steer(enemy, dt, car, stats, on_akira)
+		_steer(enemy, dt, car, stats, world, on_akira)
 		enemy.x += enemy.vx * dt
 		enemy.z += enemy.vz * dt
 
@@ -764,6 +767,18 @@ func update_enemies(
 				enemy.vz -= into * _contact.nz * 1.2
 				if enemy.akira_timer > 0.0:
 					enemy.akira_timer = 0.0
+			# Commit to sliding around the obstacle tangent so enemies never stall nose-first on walls
+			var fx := sin(enemy.heading)
+			var fz := cos(enemy.heading)
+			var cross := _contact.nx * fz - _contact.nz * fx
+			var slide_side := -1.0 if cross >= 0.0 else 1.0
+			if enemy.avoid_timer <= 0.0:
+				enemy.avoid_side = slide_side
+			enemy.avoid_timer = maxf(enemy.avoid_timer, 0.75)
+			var tx := -_contact.nz * enemy.avoid_side
+			var tz := _contact.nx * enemy.avoid_side
+			enemy.vx += tx * 1.6
+			enemy.vz += tz * 1.6
 		world.shove(enemy, spec.radius, spec.mass, _shove)
 		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, false)
 		if spec.kind == "bike":
@@ -1093,14 +1108,14 @@ func _draw_wreck(enemy: Enemy, time_s: float) -> void:
 	)
 
 
-func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, on_akira: Callable = Callable()) -> void:
+func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, world: World, on_akira: Callable = Callable()) -> void:
 	if enemy.spec.kind == "bike":
-		_steer_bike(enemy, dt, car, stats, on_akira)
+		_steer_bike(enemy, dt, car, stats, world, on_akira)
 	else:
-		_steer_car(enemy, dt, car, stats)
+		_steer_car(enemy, dt, car, stats, world)
 
 
-func _steer_car(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
+func _steer_car(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, world: World) -> void:
 	var spec := enemy.spec
 	enemy.ai_timer += dt
 
@@ -1176,16 +1191,27 @@ func _steer_car(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) ->
 				else:
 					enemy.ai_side = -enemy.ai_side
 
-	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
+	_drive_toward(enemy, dt, target_x, target_z, stats, world, speed_mult, enemy.ai_state == AI_CHARGE)
 
 
-func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, on_akira: Callable = Callable()) -> void:
+func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, world: World, on_akira: Callable = Callable()) -> void:
 	var spec := enemy.spec
 	enemy.ai_timer += dt
 
 	if enemy.akira_timer > 0.0:
-		_step_akira_slide(enemy, dt, stats)
-		return
+		var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+		if spd > 4.0 and enemy.blind < 0.45:
+			var vel_angle := atan2(enemy.vx, enemy.vz)
+			world.steer_around_obstacles(
+				enemy.x, enemy.z, vel_angle, vel_angle, spec.radius,
+				spd, spec.mass, spec.turn, 10.0, enemy.avoid_side, _avoid,
+			)
+			if _avoid.avoiding:
+				# Abort the slide early if sliding toward an obstacle so the bike can swerve clear
+				enemy.akira_timer = 0.0
+		if enemy.akira_timer > 0.0:
+			_step_akira_slide(enemy, dt, stats)
+			return
 
 	var pfx := sin(car.heading)
 	var pfz := cos(car.heading)
@@ -1248,23 +1274,30 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, o
 		target_z += prz * (dodge_side * 10.0)
 
 	# Stylish Akira slide trigger: whip broadside on sharp reversals, dodges, or post-pass peel-outs
-	if enemy.akira_cooldown <= 0.0 and enemy.blind < 0.35 and enemy.reel < 0.25 and enemy.pipe_state != PIPE_WINDUP and distance < AKIRA_VISIBLE_RANGE:
+	# Only trigger when not actively weaving around an obstacle
+	if enemy.akira_cooldown <= 0.0 and enemy.avoid_timer <= 0.0 and enemy.blind < 0.35 and enemy.reel < 0.25 and enemy.pipe_state != PIPE_WINDUP and distance < AKIRA_VISIBLE_RANGE:
 		var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
 		if spd >= AKIRA_MIN_SPEED:
 			var vel_angle := atan2(enemy.vx, enemy.vz)
 			var desired := atan2(target_x - enemy.x, target_z - enemy.z)
 			var turn_err := SimMath.wrap_angle(desired - vel_angle)
-			if absf(turn_err) >= AKIRA_MIN_TURN_ERR:
-				_begin_akira_slide(enemy, signf(turn_err), on_akira)
-				_step_akira_slide(enemy, dt, stats)
-				return
-			if just_peeled and spd >= 16.0 and randf() < 0.62:
-				var peel_dir := enemy.ai_side if (distance < 8.5 and along > 0.0) else (signf(turn_err) if absf(turn_err) > 0.25 else enemy.ai_side)
-				_begin_akira_slide(enemy, peel_dir, on_akira)
-				_step_akira_slide(enemy, dt, stats)
-				return
+			var can_slide := absf(turn_err) >= AKIRA_MIN_TURN_ERR or (just_peeled and spd >= 16.0 and randf() < 0.62)
+			if can_slide:
+				# Verify clear space ahead before committing to a broadside slide
+				world.steer_around_obstacles(
+					enemy.x, enemy.z, vel_angle, vel_angle, spec.radius,
+					spd, spec.mass, spec.turn, 12.0, 0.0, _avoid,
+				)
+				if not _avoid.avoiding:
+					if absf(turn_err) >= AKIRA_MIN_TURN_ERR:
+						_begin_akira_slide(enemy, signf(turn_err), on_akira)
+					else:
+						var peel_dir := enemy.ai_side if (distance < 8.5 and along > 0.0) else (signf(turn_err) if absf(turn_err) > 0.25 else enemy.ai_side)
+						_begin_akira_slide(enemy, peel_dir, on_akira)
+					_step_akira_slide(enemy, dt, stats)
+					return
 
-	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
+	_drive_toward(enemy, dt, target_x, target_z, stats, world, speed_mult, false)
 
 
 func _begin_akira_slide(enemy: Enemy, dir: float, on_akira: Callable) -> void:
@@ -1475,17 +1508,68 @@ func _mark_enemy_wheel(
 	enemy.track_intensities[slot] = intensity
 
 
-func _drive_toward(enemy: Enemy, dt: float, target_x: float, target_z: float, stats: Upgrades.Stats, speed_mult: float) -> void:
+func _drive_toward(
+	enemy: Enemy,
+	dt: float,
+	target_x: float,
+	target_z: float,
+	stats: Upgrades.Stats,
+	world: World,
+	speed_mult: float,
+	charging_target: bool,
+) -> void:
 	var spec := enemy.spec
 	var loose := maxf(enemy.blind, enemy.reel) * spec.sway
-	var desired := atan2(target_x - enemy.x, target_z - enemy.z) + sin(enemy.sway_phase) * SWAY_ANGLE * loose
+	var tdx := target_x - enemy.x
+	var tdz := target_z - enemy.z
+	var target_dist := sqrt(tdx * tdx + tdz * tdz)
+	var base_desired := atan2(tdx, tdz)
+	var avoid_speed := 1.0
+	var is_avoiding := false
+
+	# Clear-sighted enemies actively steer around rocks, walls, outposts, barrels, and sturdy trees;
+	# smoke-blinded enemies lose obstacle awareness and can crash into terrain
+	var sight := clampf(1.0 - enemy.blind * 1.6, 0.0, 1.0)
+	if sight > 0.05:
+		var cur_spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+		var look_cap := target_dist + 1.0 if charging_target else 999.0
+		var prev_side := enemy.avoid_side if enemy.avoid_timer > 0.0 else 0.0
+		world.steer_around_obstacles(
+			enemy.x,
+			enemy.z,
+			enemy.heading,
+			base_desired,
+			spec.radius,
+			maxf(cur_spd, spec.speed * 0.6),
+			spec.mass,
+			spec.turn,
+			look_cap,
+			prev_side,
+			_avoid,
+		)
+		if _avoid.avoiding:
+			is_avoiding = true
+			var steer_delta := SimMath.wrap_angle(_avoid.heading - base_desired)
+			base_desired = SimMath.wrap_angle(base_desired + steer_delta * sight)
+			avoid_speed = lerpf(1.0, _avoid.speed_factor, sight)
+			enemy.avoid_side = _avoid.side_bias
+			enemy.avoid_timer = 0.65
+		else:
+			enemy.avoid_timer = maxf(0.0, enemy.avoid_timer - dt)
+			if enemy.avoid_timer <= 0.0:
+				enemy.avoid_side = 0.0
+	else:
+		enemy.avoid_timer = maxf(0.0, enemy.avoid_timer - dt)
+
+	var desired := base_desired + sin(enemy.sway_phase) * SWAY_ANGLE * loose
 	var err := SimMath.wrap_angle(desired - enemy.heading)
-	var turn := spec.turn * dt * (1.0 - REEL_STEER_LOSS * enemy.reel)
+	var turn_boost := 1.25 if is_avoiding and sight > 0.5 else 1.0
+	var turn := spec.turn * turn_boost * dt * (1.0 - REEL_STEER_LOSS * enemy.reel)
 	enemy.heading += clampf(err, -turn, turn)
 
 	var fx := sin(enemy.heading)
 	var fz := cos(enemy.heading)
-	var cap := spec.speed * speed_mult
+	var cap := spec.speed * speed_mult * avoid_speed
 	if enemy.blind_timer > 0.0:
 		cap *= BLINDED_SPEED_FACTOR
 	if enemy.slow_timer > 0.0:
