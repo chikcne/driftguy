@@ -40,6 +40,7 @@ const SCRAP := Color("#ffd45e")
 const REPAIR := Color("#6fe08a")
 
 const SKID_MARK := Color(0.52, 0.31, 0.2, 0.42)
+const ENEMY_SKID_MARK := Color(0.65, 0.45, 0.31, 0.24)
 const NITRO_GLOW := Color(0.25, 0.7, 1.0, 0.7)
 const NITRO_CORE := Color(0.92, 1.0, 1.0, 1.0)
 const INK := Color("#2b1d1a")

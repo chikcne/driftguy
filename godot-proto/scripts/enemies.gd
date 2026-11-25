@@ -104,6 +104,29 @@ const BUMP_DAMAGE := 0.3
 const BUMP_SHOVE := 5.0
 const BUMP_SPIN := 5.0
 
+# Enemy drift tracks
+const TRACK_VISIBLE_RANGE := 95.0
+const ENEMY_TRACK_SLIP_SPEED := 3.0
+const ENEMY_TRACK_SLIP_RATIO := 0.14
+const ENEMY_TRACK_HEAVY_SLIP := 6.5
+
+# Biker Akira slide tuning
+const AKIRA_MIN_SPEED := 14.5
+const AKIRA_MIN_TURN_ERR := 1.05
+const AKIRA_VISIBLE_RANGE := 55.0
+const AKIRA_DURATION_MIN := 0.72
+const AKIRA_DURATION_MAX := 1.02
+const AKIRA_COOLDOWN_MIN := 2.6
+const AKIRA_COOLDOWN_MAX := 4.4
+const AKIRA_SLIP_ANGLE := 1.42
+const AKIRA_WHIP_RATE := 11.5
+const AKIRA_ARC_RATE := 0.72
+const AKIRA_BRAKE_DRAG := 2.05
+const AKIRA_LEAN_ANGLE := 0.92
+const AKIRA_DUST_INTERVAL := 0.045
+const AKIRA_SPARK_INTERVAL := 0.065
+const AKIRA_ABORT_SPEED := 4.5
+
 
 class EnemySpec:
 	extends RefCounted
@@ -212,6 +235,17 @@ class Enemy:
 	var pipe_timer: float = 0.0
 	var pipe_cooldown: float = 0.0
 	var pipe_side: float = 1.0
+	var akira_timer: float = 0.0
+	var akira_duration: float = 0.85
+	var akira_dir: float = 1.0
+	var akira_blend: float = 0.0
+	var akira_cooldown: float = 0.0
+	var akira_dust_timer: float = 0.0
+	var akira_spark_timer: float = 0.0
+	var track_heads: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
+	var track_times: PackedFloat32Array = PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
+	var track_intensities: PackedFloat32Array = PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
+	var track_active: PackedByteArray = PackedByteArray([0, 0, 0, 0])
 
 
 class Threat:
@@ -322,6 +356,9 @@ class Spawner:
 			enemy.x = car.x + sin(angle) * distance
 			enemy.z = car.z + cos(angle) * distance
 			enemy.heading = angle + PI
+			enemy.akira_timer = 0.0
+			enemy.akira_blend = 0.0
+			enemy.track_active.fill(0)
 
 		_update_waves(dt, time_s, desired, car, enemies, hp_scale)
 		_update_stragglers(dt, time_s, desired, car, enemies, hp_scale)
@@ -523,6 +560,7 @@ var active: Array[Enemy] = []
 var wrecks: Array[Enemy] = []
 var _batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _riders: SimMath.InstanceBatch
+var _legs: SimMath.InstanceBatch
 var _arms: SimMath.InstanceBatch
 var _pipes: SimMath.InstanceBatch
 var _sample := SmokeSystem.SmokeSample.new()
@@ -560,6 +598,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 
 	var rider_models := Models.build_rider_models()
 	_riders = SimMath.InstanceBatch.new(self, rider_models["body"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiders")
+	_legs = SimMath.InstanceBatch.new(self, rider_models["leg"], enemy_mat, MAX_ENEMIES * 2, false, true, "EnemyRiderLegs")
 	_arms = SimMath.InstanceBatch.new(self, rider_models["arm"], enemy_mat, MAX_ENEMIES * 2, false, true, "EnemyRiderArms")
 	_pipes = SimMath.InstanceBatch.new(self, rider_models["pipe"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderPipes")
 
@@ -652,6 +691,8 @@ func _begin_wreck(enemy: Enemy) -> void:
 	enemy.wreck_age = 0.0
 	enemy.fx_timer = 0.0
 	enemy.flinch = 1.0
+	enemy.akira_timer = 0.0
+	enemy.akira_blend = 0.0
 
 
 func update_enemies(
@@ -667,6 +708,9 @@ func update_enemies(
 	on_scrape: Callable,
 	on_kill: Callable,
 	on_throw_pipe: Callable = Callable(),
+	tracks: SkidTracks = null,
+	track_time: float = 0.0,
+	on_akira: Callable = Callable(),
 ) -> void:
 	var stir := minf(1.0, STIR_RATE * dt)
 	var knock_fade := exp(-KNOCK_FADE * dt)
@@ -687,6 +731,7 @@ func update_enemies(
 		enemy.spin *= spin_fade
 		enemy.heading += enemy.spin * dt
 		enemy.sway_phase += enemy.sway_rate * dt
+		enemy.akira_cooldown = maxf(0.0, enemy.akira_cooldown - dt)
 
 		var cloud := smoke.sample(enemy.x, enemy.z, _sample, enemy.vx, enemy.vz, stir)
 		if cloud.total > SMOKE_THRESHOLD:
@@ -708,7 +753,7 @@ func update_enemies(
 		else:
 			enemy.blind = maxf(0.0, enemy.blind - BLIND_FADE * dt)
 
-		_steer(enemy, dt, car, stats)
+		_steer(enemy, dt, car, stats, on_akira)
 		enemy.x += enemy.vx * dt
 		enemy.z += enemy.vz * dt
 
@@ -717,10 +762,16 @@ func update_enemies(
 			if into < 0.0:
 				enemy.vx -= into * _contact.nx * 1.2
 				enemy.vz -= into * _contact.nz * 1.2
+				if enemy.akira_timer > 0.0:
+					enemy.akira_timer = 0.0
 		world.shove(enemy, spec.radius, spec.mass, _shove)
 		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, false)
 		if spec.kind == "bike":
 			_update_biker_pipe(enemy, dt, car, smoke, damage_scale, on_throw_pipe)
+			_update_akira_fx(enemy, dt, car, smoke, on_scrape)
+
+		if tracks != null:
+			_update_enemy_tracks(enemy, car, tracks, track_time, false)
 
 		enemy.dust_timer -= dt
 		if enemy.dust_timer <= 0.0:
@@ -747,7 +798,7 @@ func update_enemies(
 
 	_separate()
 	sweep_dead(on_wreck, on_kill)
-	_update_wrecks(dt, car, stats, world, smoke, damage_scale, on_player_hit, on_bump, on_scrape, on_kill)
+	_update_wrecks(dt, car, stats, world, smoke, damage_scale, on_player_hit, on_bump, on_scrape, on_kill, tracks, track_time)
 
 
 func _update_wrecks(
@@ -761,6 +812,8 @@ func _update_wrecks(
 	on_bump: Callable,
 	on_scrape: Callable,
 	on_kill: Callable,
+	tracks: SkidTracks = null,
+	track_time: float = 0.0,
 ) -> void:
 	for i in range(wrecks.size() - 1, -1, -1):
 		var enemy := wrecks[i]
@@ -803,6 +856,8 @@ func _update_wrecks(
 		world.shove(enemy, spec.radius, spec.mass, _shove)
 		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, true)
 		_bump_into(enemy, on_bump)
+		if tracks != null:
+			_update_enemy_tracks(enemy, car, tracks, track_time, true)
 
 		enemy.fx_timer -= dt
 		if enemy.fx_timer <= 0.0:
@@ -885,6 +940,7 @@ func render_all(time_s: float) -> void:
 	for batch: SimMath.InstanceBatch in _batches.values():
 		batch.begin()
 	_riders.begin()
+	_legs.begin()
 	_arms.begin()
 	_pipes.begin()
 	for enemy in active:
@@ -894,6 +950,7 @@ func render_all(time_s: float) -> void:
 	for batch: SimMath.InstanceBatch in _batches.values():
 		batch.commit()
 	_riders.commit()
+	_legs.commit()
 	_arms.commit()
 	_pipes.commit()
 
@@ -907,23 +964,33 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 	var shake := enemy.flinch * 0.07 * sin(time_s * 55.0 + enemy.flank * 9.0)
 	var lean := clampf((enemy.vx * cos(enemy.heading) - enemy.vz * sin(enemy.heading)) * 0.02, -0.3, 0.3)
 	var sway := sin(enemy.sway_phase) * (BIKE_SWAY_ROLL if is_bike else CAR_SWAY_ROLL) * loose
-	var roll := slope.z + lean + sway + shake
+	var akira := enemy.akira_blend if is_bike else 0.0
+	var akira_roll := -enemy.akira_dir * AKIRA_LEAN_ANGLE * akira
+	var effective_lean := lerpf(lean, akira_roll, akira)
+	var roll := slope.z + effective_lean + sway + shake
+	var bike_lift := 0.08 * akira
 	(_batches[spec.kind] as SimMath.InstanceBatch).push(
-		enemy.x, slope.x, enemy.z, yaw, slope.y, roll, 1.0 + shake, 1.0 - shake, 1.0 + shake
+		enemy.x, slope.x + bike_lift, enemy.z, yaw, slope.y, roll, 1.0 + shake, 1.0 - shake, 1.0 + shake
 	)
 	if not is_bike:
 		return
 
 	var blind := SimMath.smoothstep_f(0.0, 1.0, enemy.blind)
 	var wiggle := time_s * 11.0 + enemy.flank * 9.0
-	var mount := SimMath.sim_transform(enemy.x, slope.x, enemy.z, yaw, slope.y, roll, 1.0, 1.0, 1.0)
+	var mount := SimMath.sim_transform(enemy.x, slope.x + bike_lift, enemy.z, yaw, slope.y, roll, 1.0, 1.0, 1.0)
 	var seat_yaw := sin(wiggle * 0.73) * RIDER_WIGGLE_YAW * blind
 	var seat_pitch := RIDER_RECOIL * blind
 	var seat_roll := sin(wiggle) * RIDER_WIGGLE_ROLL * blind
 
+	# Akira slide rider posture: reclined back, looking into the slide direction, braced against the lean
+	if akira > 0.001:
+		seat_yaw += -enemy.akira_dir * 0.44 * akira
+		seat_pitch += -0.32 * akira
+		seat_roll += enemy.akira_dir * 0.28 * akira
+
 	var weapon_side := enemy.pipe_side
 	var choking := enemy.blind >= 0.65
-	if not choking:
+	if not choking and akira < 0.35:
 		match enemy.pipe_state:
 			PIPE_WINDUP:
 				var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.pipe_timer / PIPE_WINDUP_SECONDS, 0.0, 1.0))
@@ -941,12 +1008,34 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 		1.0, 1.0, 1.0,
 	)
 
-	var has_pipe_in_hand := (not choking) and (enemy.pipe_state == PIPE_WINDUP or (enemy.pipe_state == PIPE_IDLE and enemy.pipe_cooldown <= 0.45))
+	for side: float in [-1.0, 1.0]:
+		var leg_yaw := 0.0
+		var leg_pitch := 0.0
+		var leg_roll := 0.0
+		var leg_sz := 1.0
+		if akira > 0.001:
+			if side * enemy.akira_dir > 0.0:
+				# Inside leg kicks out and extends down to plant the boot on the desert floor
+				leg_yaw = side * 0.78 * akira
+				leg_pitch = 0.44 * akira
+				leg_roll = -side * 0.42 * akira
+				leg_sz = lerpf(1.0, 1.22, akira)
+			else:
+				# Outside leg braces tight against the bike frame
+				leg_pitch = -0.10 * akira
+		_legs.push_under(
+			seat,
+			side * Models.RIDER_HIP.x, Models.RIDER_HIP.y, Models.RIDER_HIP.z,
+			leg_yaw, leg_pitch, leg_roll,
+			1.0, 1.0, leg_sz,
+		)
+
+	var has_pipe_in_hand := (not choking) and (akira < 0.35) and (enemy.pipe_state == PIPE_WINDUP or (enemy.pipe_state == PIPE_IDLE and enemy.pipe_cooldown <= 0.45))
 	for side: float in [-1.0, 1.0]:
 		var arm_yaw := side * lerpf(ARM_GRIP_YAW, ARM_COVER_YAW, blind)
 		var arm_pitch := lerpf(ARM_GRIP_PITCH, ARM_COVER_PITCH, blind) + (sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind
 		var arm_len := lerpf(ARM_GRIP_LENGTH, ARM_COVER_LENGTH, blind)
-		var is_throw_arm := (side * weapon_side > 0.0) and not choking
+		var is_throw_arm := (side * weapon_side > 0.0) and not choking and akira < 0.35
 
 		var pipe_yaw := 0.0
 		var pipe_pitch := 0.0
@@ -976,6 +1065,12 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 					arm_pitch = lerpf(ARM_GRIP_PITCH, -0.05, f)
 					arm_len = lerpf(ARM_GRIP_LENGTH, 1.18, f)
 
+		if akira > 0.001 and not choking:
+			# Both hands locked hard on the handlebars while leaning back into the slide
+			arm_yaw = lerpf(arm_yaw, side * 0.16 + enemy.akira_dir * 0.22, akira)
+			arm_pitch = lerpf(arm_pitch, 0.56, akira)
+			arm_len = lerpf(arm_len, 1.24, akira)
+
 		var arm_xform := _arms.push_under(
 			seat,
 			side * Models.RIDER_SHOULDER.x, Models.RIDER_SHOULDER.y, Models.RIDER_SHOULDER.z,
@@ -998,9 +1093,9 @@ func _draw_wreck(enemy: Enemy, time_s: float) -> void:
 	)
 
 
-func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
+func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, on_akira: Callable = Callable()) -> void:
 	if enemy.spec.kind == "bike":
-		_steer_bike(enemy, dt, car, stats)
+		_steer_bike(enemy, dt, car, stats, on_akira)
 	else:
 		_steer_car(enemy, dt, car, stats)
 
@@ -1084,9 +1179,13 @@ func _steer_car(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) ->
 	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
 
 
-func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
+func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats, on_akira: Callable = Callable()) -> void:
 	var spec := enemy.spec
 	enemy.ai_timer += dt
+
+	if enemy.akira_timer > 0.0:
+		_step_akira_slide(enemy, dt, stats)
+		return
 
 	var pfx := sin(car.heading)
 	var pfz := cos(car.heading)
@@ -1106,6 +1205,7 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -
 	var target_x := pred_x
 	var target_z := pred_z
 	var speed_mult := 1.0
+	var just_peeled := false
 
 	match enemy.ai_state:
 		AI_SETUP:
@@ -1127,11 +1227,14 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -
 			if along > 6.5 or enemy.ai_timer > 2.8:
 				enemy.ai_state = AI_RECOVER
 				enemy.ai_timer = 0.0
+				just_peeled = true
 
 		AI_RECOVER:
 			# Peel outward away from the player before looping back for another pass
 			target_x = car.x + prx * (enemy.ai_side * 15.0) + pfx * 11.0
 			target_z = car.z + prz * (enemy.ai_side * 15.0) + pfz * 11.0
+			if enemy.ai_timer <= dt * 1.6:
+				just_peeled = true
 			if enemy.ai_timer >= 1.45 or distance > 16.5:
 				enemy.ai_state = AI_SETUP
 				enemy.ai_timer = 0.0
@@ -1144,7 +1247,232 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -
 		target_x += prx * (dodge_side * 10.0)
 		target_z += prz * (dodge_side * 10.0)
 
+	# Stylish Akira slide trigger: whip broadside on sharp reversals, dodges, or post-pass peel-outs
+	if enemy.akira_cooldown <= 0.0 and enemy.blind < 0.35 and enemy.reel < 0.25 and enemy.pipe_state != PIPE_WINDUP and distance < AKIRA_VISIBLE_RANGE:
+		var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+		if spd >= AKIRA_MIN_SPEED:
+			var vel_angle := atan2(enemy.vx, enemy.vz)
+			var desired := atan2(target_x - enemy.x, target_z - enemy.z)
+			var turn_err := SimMath.wrap_angle(desired - vel_angle)
+			if absf(turn_err) >= AKIRA_MIN_TURN_ERR:
+				_begin_akira_slide(enemy, signf(turn_err), on_akira)
+				_step_akira_slide(enemy, dt, stats)
+				return
+			if just_peeled and spd >= 16.0 and randf() < 0.62:
+				var peel_dir := enemy.ai_side if (distance < 8.5 and along > 0.0) else (signf(turn_err) if absf(turn_err) > 0.25 else enemy.ai_side)
+				_begin_akira_slide(enemy, peel_dir, on_akira)
+				_step_akira_slide(enemy, dt, stats)
+				return
+
 	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
+
+
+func _begin_akira_slide(enemy: Enemy, dir: float, on_akira: Callable) -> void:
+	enemy.akira_dir = 1.0 if dir >= 0.0 else -1.0
+	enemy.akira_duration = randf_range(AKIRA_DURATION_MIN, AKIRA_DURATION_MAX)
+	enemy.akira_timer = enemy.akira_duration
+	enemy.akira_cooldown = randf_range(AKIRA_COOLDOWN_MIN, AKIRA_COOLDOWN_MAX)
+	enemy.akira_dust_timer = 0.0
+	enemy.akira_spark_timer = 0.0
+	if on_akira.is_valid():
+		on_akira.call(enemy)
+
+
+func _step_akira_slide(enemy: Enemy, dt: float, stats: Upgrades.Stats) -> void:
+	var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+	if enemy.blind >= 0.6 or enemy.reel >= 0.4 or spd < AKIRA_ABORT_SPEED:
+		enemy.akira_timer = 0.0
+		return
+
+	enemy.akira_timer = maxf(0.0, enemy.akira_timer - dt)
+	var prog := 1.0 - enemy.akira_timer / maxf(0.01, enemy.akira_duration)
+
+	# Curve velocity smoothly along the turn arc while scrubbing speed broadside
+	var vel_angle := atan2(enemy.vx, enemy.vz)
+	var arc_delta := enemy.akira_dir * AKIRA_ARC_RATE * (1.0 - 0.35 * prog) * dt
+	vel_angle += arc_delta
+
+	var drag := AKIRA_BRAKE_DRAG * (1.15 if enemy.slow_timer > 0.0 else 1.0)
+	var new_spd := spd * exp(-drag * dt)
+	enemy.vx = sin(vel_angle) * new_spd
+	enemy.vz = cos(vel_angle) * new_spd
+
+	# Whip bike broadside (~81 deg) to the velocity vector, then straighten on exit
+	var target_slip := AKIRA_SLIP_ANGLE * (1.0 if prog < 0.78 else lerpf(1.0, 0.25, (prog - 0.78) / 0.22))
+	var target_heading := vel_angle + enemy.akira_dir * target_slip
+	var h_err := SimMath.wrap_angle(target_heading - enemy.heading)
+	enemy.heading += clampf(h_err, -AKIRA_WHIP_RATE * dt, AKIRA_WHIP_RATE * dt)
+
+	# Kick throttle on the tail end of the slide so the bike snaps out cleanly
+	if prog > 0.78:
+		var exit_push := ((prog - 0.78) / 0.22) * enemy.spec.accel * 1.15 * dt
+		if enemy.slow_timer > 0.0:
+			exit_push *= 1.0 - stats.ash_slow
+		enemy.vx += sin(enemy.heading) * exit_push
+		enemy.vz += cos(enemy.heading) * exit_push
+
+
+func _update_akira_fx(enemy: Enemy, dt: float, car: CarBody, smoke: SmokeSystem, on_scrape: Callable) -> void:
+	if enemy.akira_timer > 0.0:
+		var prog := 1.0 - enemy.akira_timer / maxf(0.01, enemy.akira_duration)
+		var target_blend := 1.0 if prog < 0.80 else clampf((1.0 - prog) / 0.20, 0.0, 1.0)
+		enemy.akira_blend = SimMath.damp(enemy.akira_blend, target_blend, 18.0 if target_blend > enemy.akira_blend else 10.0, dt)
+	else:
+		enemy.akira_blend = SimMath.damp(enemy.akira_blend, 0.0, 10.0, dt)
+		return
+
+	if absf(enemy.x - car.x) > DUST_VISIBLE_RANGE or absf(enemy.z - car.z) > DUST_VISIBLE_RANGE:
+		return
+
+	var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+	if spd < 5.0:
+		return
+
+	var fx := sin(enemy.heading)
+	var fz := cos(enemy.heading)
+	var rx := fz
+	var rz := -fx
+
+	# Stylized dust/tire plumes blasting off both front and rear tires opposite the slide
+	enemy.akira_dust_timer -= dt
+	if enemy.akira_dust_timer <= 0.0:
+		enemy.akira_dust_timer = AKIRA_DUST_INTERVAL
+		for wheel_z: float in [0.85, -0.80]:
+			var wx := enemy.x + fx * wheel_z
+			var wz := enemy.z + fz * wheel_z
+			smoke.emit(
+				SmokeSystem.PUFF_DUST,
+				wx + SimMath.rand_signed(0.18),
+				DesertTerrain.ground_height(wx, wz) + 0.28,
+				wz + SimMath.rand_signed(0.18),
+				enemy.vx * 0.15 + rx * (enemy.akira_dir * 2.2) + SimMath.rand_signed(0.9),
+				randf_range(1.1, 2.3),
+				enemy.vz * 0.15 + rz * (enemy.akira_dir * 2.2) + SimMath.rand_signed(0.9),
+				randf_range(0.55, 0.85),
+				1.25,
+				randf_range(0.85, 1.35),
+				0.68,
+				0.35,
+			)
+
+	# Sparks spraying from the dragging boot / low footpeg
+	enemy.akira_spark_timer -= dt
+	if enemy.akira_spark_timer <= 0.0 and spd > 8.5:
+		enemy.akira_spark_timer = AKIRA_SPARK_INTERVAL
+		if on_scrape.is_valid():
+			on_scrape.call(enemy)
+
+
+func _update_enemy_tracks(enemy: Enemy, car: CarBody, tracks: SkidTracks, track_time: float, wrecked: bool) -> void:
+	if absf(enemy.x - car.x) > TRACK_VISIBLE_RANGE or absf(enemy.z - car.z) > TRACK_VISIBLE_RANGE:
+		enemy.track_active.fill(0)
+		return
+
+	var spec := enemy.spec
+	var is_bike := spec.kind == "bike"
+	var loose := maxf(enemy.blind, enemy.reel) * spec.sway
+	var yaw := enemy.heading + (0.0 if wrecked else sin(enemy.sway_phase + 1.3) * SWAY_FISHTAIL * loose)
+	var fx := sin(yaw)
+	var fz := cos(yaw)
+
+	var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
+	var side_slip := absf(enemy.vx * cos(enemy.heading) - enemy.vz * sin(enemy.heading))
+	var slip_ratio := side_slip / (spd + 1.0)
+
+	var is_akira := is_bike and not wrecked and enemy.akira_blend > 0.25 and spd > 4.0
+	var drifting := false
+	var heavy := false
+	var intensity := 0.0
+
+	if wrecked:
+		drifting = spd > 3.5
+		heavy = spd > 5.5
+		intensity = clampf(spd / 12.0, 0.35, 1.0)
+	elif is_akira:
+		drifting = true
+		heavy = true
+		intensity = lerpf(0.75, 1.3, enemy.akira_blend) * clampf(spd / 12.0, 0.5, 1.0)
+	else:
+		drifting = spd > 5.0 and side_slip > ENEMY_TRACK_SLIP_SPEED and slip_ratio > ENEMY_TRACK_SLIP_RATIO
+		heavy = drifting and (side_slip > ENEMY_TRACK_HEAVY_SLIP or enemy.blind > 0.35 or enemy.reel > 0.25)
+		intensity = clampf((side_slip - ENEMY_TRACK_SLIP_SPEED) / 8.0, 0.28, 1.0)
+
+	if not drifting:
+		enemy.track_active.fill(0)
+		return
+
+	if is_bike:
+		# Slot 0: rear wheel, Slot 1: front wheel (Akira/heavy/wreck), Slot 2: dragging boot (Akira)
+		_mark_enemy_wheel(enemy, 0, enemy.x - fx * 0.80, enemy.z - fz * 0.80, 0.12, true, intensity, tracks, track_time)
+		_mark_enemy_wheel(enemy, 1, enemy.x + fx * 0.85, enemy.z + fz * 0.85, 0.10, heavy, intensity * 0.92, tracks, track_time)
+		var boot_on := is_akira and enemy.akira_blend > 0.42
+		var boot_across := enemy.akira_dir * 0.68
+		_mark_enemy_wheel(enemy, 2, enemy.x + fx * 0.05 + fz * boot_across, enemy.z + fz * 0.05 - fx * boot_across, 0.07, boot_on, intensity * 0.65, tracks, track_time)
+		enemy.track_active[3] = 0
+		return
+
+	var rear_x := 1.0
+	var rear_z := -1.05
+	var front_x := 0.95
+	var front_z := 1.05
+	var half_w := 0.16
+	match spec.kind:
+		"interceptor":
+			rear_x = 1.0
+			rear_z = -1.30
+			front_x = 0.95
+			front_z = 1.30
+			half_w = 0.16
+		"truck":
+			rear_x = 1.2
+			rear_z = -2.2
+			front_x = 1.2
+			front_z = 1.8
+			half_w = 0.21
+		"rig":
+			rear_x = 1.45
+			rear_z = -4.3
+			front_x = 1.45
+			front_z = 3.6
+			half_w = 0.25
+
+	# Rear axle (always marks while drifting)
+	_mark_enemy_wheel(enemy, 0, enemy.x + fx * rear_z - fz * rear_x, enemy.z + fz * rear_z + fx * rear_x, half_w, true, intensity, tracks, track_time)
+	_mark_enemy_wheel(enemy, 1, enemy.x + fx * rear_z + fz * rear_x, enemy.z + fz * rear_z - fx * rear_x, half_w, true, intensity, tracks, track_time)
+	# Front axle (marks on heavy drifts, smoke fishtails, and spinning wrecks)
+	_mark_enemy_wheel(enemy, 2, enemy.x + fx * front_z - fz * front_x, enemy.z + fz * front_z + fx * front_x, half_w * 0.88, heavy, intensity * 0.78, tracks, track_time)
+	_mark_enemy_wheel(enemy, 3, enemy.x + fx * front_z + fz * front_x, enemy.z + fz * front_z - fx * front_x, half_w * 0.88, heavy, intensity * 0.78, tracks, track_time)
+
+
+func _mark_enemy_wheel(
+	enemy: Enemy,
+	slot: int,
+	wx: float,
+	wz: float,
+	half_width: float,
+	sliding: bool,
+	intensity: float,
+	tracks: SkidTracks,
+	track_time: float,
+) -> void:
+	if not sliding:
+		enemy.track_active[slot] = 0
+		return
+	if enemy.track_active[slot] == 0:
+		enemy.track_heads[slot] = Vector2(wx, wz)
+		enemy.track_times[slot] = track_time
+		enemy.track_intensities[slot] = intensity
+		enemy.track_active[slot] = 1
+		return
+	var prev := enemy.track_heads[slot]
+	var dx := wx - prev.x
+	var dz := wz - prev.y
+	if dx * dx + dz * dz < tracks.min_step * tracks.min_step:
+		return
+	tracks.add_segment(prev.x, prev.y, wx, wz, half_width, enemy.track_times[slot], track_time, enemy.track_intensities[slot], intensity)
+	enemy.track_heads[slot] = Vector2(wx, wz)
+	enemy.track_times[slot] = track_time
+	enemy.track_intensities[slot] = intensity
 
 
 func _drive_toward(enemy: Enemy, dt: float, target_x: float, target_z: float, stats: Upgrades.Stats, speed_mult: float) -> void:
@@ -1198,8 +1526,8 @@ func _update_biker_pipe(
 	on_throw_pipe: Callable,
 ) -> void:
 	enemy.pipe_cooldown = maxf(0.0, enemy.pipe_cooldown - dt)
-	# Heavy smoke directly on the biker forces them to cover their face and aborts throwing
-	if enemy.blind >= 0.65:
+	# Heavy smoke directly on the biker (or holding both bars during an Akira slide) prevents throwing
+	if enemy.blind >= 0.65 or enemy.akira_timer > 0.0:
 		enemy.pipe_state = PIPE_IDLE
 		enemy.pipe_timer = 0.0
 		return
@@ -1439,6 +1767,7 @@ func _collide_with_car(
 	on_player_hit.call(enemy, dmg_to_player, closing)
 
 	# After an impact, peel off and loop around for a fresh ramming/swoop run
+	enemy.akira_timer = 0.0
 	enemy.ai_state = AI_RECOVER
 	enemy.ai_timer = 0.0
 

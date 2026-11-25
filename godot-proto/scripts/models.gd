@@ -8,6 +8,7 @@ const HALF_PI := PI * 0.5
 const WHEEL_AXIS := Vector3(0.0, 0.0, HALF_PI)
 const RIDER_SEAT := Vector3(0.0, 0.9, -0.27)
 const RIDER_SHOULDER := Vector3(0.29, 0.5, 0.17)
+const RIDER_HIP := Vector3(0.25, -0.04, -0.02)
 
 
 static func _wheel_pair(kit: ModelKit, x: float, z: float, diameter: float, width: float) -> void:
@@ -23,11 +24,14 @@ static func build_rider_models() -> Dictionary:
 	var kit := ModelKit.new()
 	var body := kit \
 		.box(Vector3(0.46, 0.62, 0.32), Vector3(0.0, 0.3, 0.07), Palette.RAIDER_BLACK, Vector3(0.3, 0.0, 0.0)) \
+		.box(Vector3(0.42, 0.18, 0.28), Vector3(0.0, -0.02, 0.0), Palette.RUST_DARK) \
 		.blob(0.2, Vector3(0.0, 0.72, 0.25), Palette.RAIDER_BONE, Vector3.ONE, 0.05) \
-		.box(Vector3(0.15, 0.2, 0.5), Vector3(0.25, -0.04, 0.2), Palette.RUST_DARK) \
-		.box(Vector3(0.15, 0.2, 0.5), Vector3(-0.25, -0.04, 0.2), Palette.RUST_DARK) \
-		.box(Vector3(0.13, 0.42, 0.14), Vector3(0.25, -0.3, 0.38), Palette.RUST_DARK) \
-		.box(Vector3(0.13, 0.42, 0.14), Vector3(-0.25, -0.3, 0.38), Palette.RUST_DARK) \
+		.build()
+
+	var leg := kit \
+		.box(Vector3(0.15, 0.2, 0.48), Vector3(0.0, 0.0, 0.22), Palette.RUST_DARK) \
+		.box(Vector3(0.13, 0.42, 0.14), Vector3(0.0, -0.26, 0.40), Palette.RUST_DARK) \
+		.box(Vector3(0.15, 0.12, 0.24), Vector3(0.0, -0.46, 0.45), Palette.RAIDER_BLACK) \
 		.build()
 
 	var arm := kit \
@@ -42,7 +46,7 @@ static func build_rider_models() -> Dictionary:
 		.cylinder(0.17, 0.17, 0.10, 7, Vector3(0.0, 0.0, -0.06), Palette.METAL_DARK, Vector3(HALF_PI, 0.0, 0.0))
 	var pipe := kit.build()
 
-	return { "body": body, "arm": arm, "pipe": pipe }
+	return { "body": body, "leg": leg, "arm": arm, "pipe": pipe }
 
 
 static func build_enemy_models() -> Dictionary:

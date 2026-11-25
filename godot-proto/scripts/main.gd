@@ -87,6 +87,7 @@ var _combat: Combat
 var _effects: Effects
 var _gibs: GibSystem
 var _tracks: SkidTracks
+var _enemy_tracks: SkidTracks
 var _audio: GameAudio
 var _car_model: CarModel
 var _camera: Camera3D
@@ -108,6 +109,7 @@ var _level := 1
 var _kills := 0
 var _time := 0.0
 var _clock := 0.0
+var _track_time := 0.0
 var _invulnerable := 0.0
 var _shake := 0.0
 var _cam_dir := CAMERA_OFFSET.normalized()
@@ -146,6 +148,7 @@ var _cb_collect: Callable
 var _cb_shot: Callable
 var _cb_throw_pipe: Callable
 var _cb_pipe_hit: Callable
+var _cb_akira: Callable
 
 
 func _ready() -> void:
@@ -174,7 +177,12 @@ func _ready() -> void:
 	_tracks = SkidTracks.new()
 	_tracks.name = "SkidTracks"
 	add_child(_tracks)
-	_tracks.setup(4)
+	_tracks.setup(4, 2400, Palette.SKID_MARK, 10.0, 16.0, 0.065, 0.35, 1)
+
+	_enemy_tracks = SkidTracks.new()
+	_enemy_tracks.name = "EnemySkidTracks"
+	add_child(_enemy_tracks)
+	_enemy_tracks.setup(0, 3200, Palette.ENEMY_SKID_MARK, 0.55, 3.0, 0.055, 0.52, 0)
 
 	_smoke = SmokeSystem.new()
 	_smoke.name = "SmokeSystem"
@@ -231,6 +239,7 @@ func _ready() -> void:
 	_cb_shot = Callable(_audio, "shot")
 	_cb_throw_pipe = Callable(_gibs, "throw_pipe")
 	_cb_pipe_hit = Callable(self, "_on_pipe_hit")
+	_cb_akira = Callable(self, "_on_enemy_akira")
 	_spawner.on_threat = Callable(self, "_on_threat")
 
 	_reset_run()
@@ -396,7 +405,11 @@ func _reset_run() -> void:
 	_combat.clear()
 	_effects.clear()
 	_gibs.clear()
+	_track_time = 0.0
+	_tracks.set_time(0.0)
 	_tracks.clear_tracks()
+	_enemy_tracks.set_time(0.0)
+	_enemy_tracks.clear_tracks()
 	_smoke.clear()
 	_world.reset_world()
 	_world.update_around(0.0, 0.0)
@@ -410,6 +423,9 @@ func _reset_run() -> void:
 
 
 func _idle(dt: float) -> void:
+	_track_time += dt
+	_tracks.set_time(_track_time)
+	_enemy_tracks.set_time(_track_time)
 	_world.step_world(dt, _car.x, _car.z)
 	_effects.update_effects(dt)
 	_gibs.update_gibs(dt, _smoke)
@@ -422,6 +438,9 @@ func _idle(dt: float) -> void:
 
 func _simulate(dt: float) -> void:
 	_time += dt
+	_track_time += dt
+	_tracks.set_time(_track_time)
+	_enemy_tracks.set_time(_track_time)
 	_invulnerable -= dt
 
 	# Gather controls from Gyro + Touch + Keyboard + Gamepad
@@ -494,6 +513,9 @@ func _simulate(dt: float) -> void:
 		_cb_scrape,
 		_cb_kill,
 		_cb_throw_pipe,
+		_enemy_tracks,
+		_track_time,
+		_cb_akira,
 	)
 	_world.step_world(dt, _car.x, _car.z)
 	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot, _cb_hit_barrels)
@@ -511,6 +533,7 @@ func _simulate(dt: float) -> void:
 	_enemies.render_all(_clock)
 	_combat.render_all(_clock)
 	_tracks.flush()
+	_enemy_tracks.flush()
 
 	var needed := Upgrades.scrap_needed(_level)
 	_hud.set_frame(
@@ -792,7 +815,19 @@ func _on_enemy_bumped(enemy: EnemySystem.Enemy, strength: float) -> void:
 
 
 func _on_enemy_scrape(enemy: EnemySystem.Enemy) -> void:
-	_gibs.sparks(enemy.x, DesertTerrain.ground_height(enemy.x, enemy.z) + 0.2, enemy.z, 2, 7.0, enemy.vx, enemy.vz)
+	var sx := enemy.x
+	var sz := enemy.z
+	if enemy.akira_timer > 0.0:
+		var fx := sin(enemy.heading)
+		var fz := cos(enemy.heading)
+		var side := enemy.akira_dir * 0.55
+		sx = enemy.x - fx * 0.35 + fz * side
+		sz = enemy.z - fz * 0.35 - fx * side
+	_gibs.sparks(sx, DesertTerrain.ground_height(sx, sz) + 0.2, sz, 2, 7.0, enemy.vx, enemy.vz)
+
+
+func _on_enemy_akira(enemy: EnemySystem.Enemy) -> void:
+	_audio.screech(enemy.akira_duration, 0.14, _loudness_at(enemy.x, enemy.z) * 0.45)
 
 
 func _on_enemy_killed(enemy: EnemySystem.Enemy) -> void:
