@@ -80,7 +80,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	scrap_mat.stencil_reference = 1
 	var scrap_sil_mat := ShaderMaterial.new()
 	scrap_sil_mat.shader = sil_shader
-	scrap_sil_mat.set_shader_parameter("veil_color", Color(0.95, 0.72, 0.16, 0.78))
+	scrap_sil_mat.set_shader_parameter("veil_color", Color(0.96, 0.64, 0.02, 0.94))
 	scrap_sil_mat.render_priority = 3
 	scrap_mat.next_pass = scrap_sil_mat
 	_scrap_batch = SimMath.InstanceBatch.new(self, Models.build_scrap_model(), scrap_mat, MAX_PICKUPS, false, false, "ScrapPickups")
