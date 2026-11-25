@@ -79,8 +79,8 @@ func drive(dt: float, speed_fraction: float, throttle: float, slide: float, boos
 	_engine_gain = SimMath.damp(_engine_gain, target_egain, 12.5, dt)
 	_skid_gain = SimMath.damp(_skid_gain, target_sgain, 16.0, dt)
 	_skid_cutoff = SimMath.damp(_skid_cutoff, target_scut, 10.0, dt)
-	_nitro_gain = SimMath.damp(_nitro_gain, target_ngain, 20.0, dt)
-	_nitro_cutoff = SimMath.damp(_nitro_cutoff, target_ncut, 8.0, dt)
+	_nitro_gain = SimMath.damp(_nitro_gain, target_ngain, 22.0, dt)
+	_nitro_cutoff = SimMath.damp(_nitro_cutoff, target_ncut, 14.0, dt)
 
 	# Engine base wave is generated at 100 Hz
 	_engine_player.pitch_scale = clampf(_engine_freq / 100.0, 0.25, 3.0)
@@ -142,7 +142,11 @@ func pickup(pitch_step: float) -> void:
 
 
 func nitro_ignite() -> void:
-	_play_sfx("nitro_ignite", 0.85, 1.0, "Impacts")
+	_play_sfx("nitro_ignite", 0.75, 1.0, "Impacts")
+
+
+func nitro_tap() -> void:
+	_play_sfx("nitro_tap", 0.36, randf_range(0.94, 1.08), "Impacts")
 
 
 func nitro_ready() -> void:
@@ -321,6 +325,12 @@ func _generate_all_streams() -> void:
 	_mix_sweep(ni_buf, 0.02, 0.88, 6000.0, 900.0, 0.28, false, rng)
 	_mix_notes_into(ni_buf, [[330.0, 0.0, 0.22, 0.12, 1], [495.0, 0.035, 0.22, 0.12, 1], [990.0, 0.07, 0.22, 0.12, 1]])
 	_streams["nitro_ignite"] = _make_wav(ni_buf, false)
+
+	# 10b. Nitro tap: crisp short burst for rapid drift feathering
+	var nt_buf := _zero_buf(0.18)
+	_mix_sine_drop(nt_buf, 0.0, 0.11, 150.0, 58.0, 0.45)
+	_mix_sweep(nt_buf, 0.0, 0.16, 900.0, 4200.0, 0.35, true, rng)
+	_streams["nitro_tap"] = _make_wav(nt_buf, false)
 
 	# 11. Nitro ready: crisp square chime
 	_streams["nitro_ready"] = _make_wav(_synth_notes([

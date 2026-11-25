@@ -3,7 +3,7 @@ extends CanvasLayer
 
 # Complete Driftguy HUD & screens for iOS + Desktop:
 # - Top XP bar, Level, Timer, Wrecked kills, Pause & Gyro buttons
-# - Bottom gauges (Speed, Hull, Smoke, Nitrous bar + tank pips) & Loadout badges
+# - Bottom gauges (Speed, Hull, Smoke, Nitrous bar) & Loadout badges
 # - Off-screen War Party / War Rig threat markers (horizon-lock aware!)
 # - Damage red flash & Nitrous cyan rush radial vignettes
 # - Fixed-to-glass iOS touch controls (Auto Gas, Brake/Rev, Nitro, Drift)
@@ -41,7 +41,7 @@ var zoom_compensation := true
 var show_horizon := false
 var touch_brake := false
 var touch_handbrake := false
-var touch_nitro_queued := false
+var touch_nitro := false
 
 var _stabilizer: GyroStabilizer
 var _root: Control
@@ -65,9 +65,9 @@ var _hull_fill: ColorRect
 var _hull_label: Label
 var _smoke_fill: ColorRect
 var _nitro_fill: ColorRect
-var _nitro_tanks_box: HBoxContainer
-var _nitro_pips: Array[ColorRect] = []
+var _nitro_label: Label
 var _nitro_btn: Button
+var _nitro_btn_fill: ColorRect
 var _auto_gas_btn: Button
 var _mute_btn: Button
 var _loadout_grid: GridContainer
@@ -222,13 +222,6 @@ func _process(delta: float) -> void:
 		_retry_btn.scale = Vector2(pulse, pulse)
 
 
-func consume_touch_nitro() -> bool:
-	if touch_nitro_queued:
-		touch_nitro_queued = false
-		return true
-	return false
-
-
 func show_phase(phase: String) -> void:
 	_title_screen.visible = phase == "title"
 	_hud_layer.visible = phase != "title"
@@ -238,7 +231,7 @@ func show_phase(phase: String) -> void:
 	if phase != "playing":
 		touch_brake = false
 		touch_handbrake = false
-		touch_nitro_queued = false
+		touch_nitro = false
 	if phase == "dying" or phase == "gameover" or phase == "title":
 		set_threats([], 0.0)
 		clear_enemy_indicators()
@@ -290,31 +283,35 @@ func set_frame(
 		]
 
 
-func set_nitro(tanks: int, max_tanks: int, fill: float, burning: bool) -> void:
-	if _nitro_pips.size() != max_tanks:
-		for child in _nitro_tanks_box.get_children():
-			child.queue_free()
-		_nitro_pips.clear()
-		for _i in max_tanks:
-			var pip := ColorRect.new()
-			pip.custom_minimum_size = Vector2(10.0, 14.0)
-			pip.color = Color(0.168, 0.114, 0.102, 0.85)
-			_nitro_tanks_box.add_child(pip)
-			_nitro_pips.append(pip)
-	for i in _nitro_pips.size():
-		_nitro_pips[i].color = Palette.NITRO_CYAN if i < tanks else Color(0.168, 0.114, 0.102, 0.85)
+func set_nitro(fill: float, burning: bool, ready: bool = true) -> void:
+	var clamped := clampf(fill, 0.0, 1.0)
+	var pct := int(round(clamped * 100.0))
+	_nitro_fill.anchor_right = clamped
+	if burning:
+		_nitro_fill.color = Color("#e0f7ff")
+		_nitro_label.text = "NITROUS  %d%%" % pct
+	elif clamped >= 0.995:
+		_nitro_fill.color = Color("#9ee4ff")
+		_nitro_label.text = "NITROUS  FULL"
+	elif ready:
+		_nitro_fill.color = Palette.NITRO_CYAN
+		_nitro_label.text = "NITROUS  %d%%" % pct
+	else:
+		_nitro_fill.color = Color(0.45, 0.65, 0.75, 0.75)
+		_nitro_label.text = "NITROUS"
 
-	_nitro_fill.anchor_right = clampf(fill, 0.0, 1.0)
-	_nitro_fill.color = Color("#e0f7ff") if burning else Palette.NITRO_CYAN
+	if _nitro_btn_fill != null:
+		_nitro_btn_fill.anchor_right = clamped
+		_nitro_btn_fill.color = Color("#e0f7ff") if burning else Palette.NITRO_CYAN
 
 	if burning:
-		_nitro_btn.text = "NITRO\nBURN!"
+		_nitro_btn.text = "NITRO\n%d%%" % pct
 		_nitro_btn.modulate = Color(1.15, 1.25, 1.35, 1.0)
-	elif tanks > 0:
-		_nitro_btn.text = "NITRO\n[%d]" % tanks
+	elif ready:
+		_nitro_btn.text = "NITRO\n%d%%" % pct
 		_nitro_btn.modulate = Color(1.0, 1.0, 1.0, 1.0)
 	else:
-		_nitro_btn.text = "NITRO\n0"
+		_nitro_btn.text = "NITRO\nEMPTY"
 		_nitro_btn.modulate = Color(0.7, 0.7, 0.75, 0.65)
 
 
@@ -912,25 +909,15 @@ func _build_playing_hud() -> void:
 	sm_lbl.add_theme_color_override("font_color", Color(0.45, 0.38, 0.35))
 	gauges.add_child(smoke_bar["root"])
 
-	# Nitrous bar + tank pips
-	var nitro_row := HBoxContainer.new()
-	nitro_row.add_theme_constant_override("separation", 6)
-	nitro_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	gauges.add_child(nitro_row)
-
-	var nitro_bar := _make_bar(14.0, Palette.NITRO_CYAN)
-	var nb_root: Control = nitro_bar["root"]
-	nb_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Nitrous bar
+	var nitro_bar := _make_bar(16.0, Palette.NITRO_CYAN)
 	_nitro_fill = nitro_bar["fill"]
-	var nb_lbl: Label = nitro_bar["label"]
-	nb_lbl.text = "NITROUS"
-	nb_lbl.add_theme_font_size_override("font_size", 9)
-	nitro_row.add_child(nb_root)
-
-	_nitro_tanks_box = HBoxContainer.new()
-	_nitro_tanks_box.add_theme_constant_override("separation", 4)
-	_nitro_tanks_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	nitro_row.add_child(_nitro_tanks_box)
+	_nitro_label = nitro_bar["label"]
+	_nitro_label.text = "NITROUS"
+	_nitro_label.add_theme_font_size_override("font_size", 10)
+	_nitro_label.add_theme_color_override("font_shadow_color", Color(0.08, 0.14, 0.18, 0.85))
+	_nitro_label.add_theme_constant_override("shadow_offset_y", 1)
+	gauges.add_child(nitro_bar["root"])
 
 	# Bottom-right: Loadout badges above Nitro + Drift thumb pads
 	var br_col := VBoxContainer.new()
@@ -962,9 +949,29 @@ func _build_playing_hud() -> void:
 	right_pads.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	br_col.add_child(right_pads)
 
-	_nitro_btn = _make_thumb_button("NITRO\n[1]", Color(0.12, 0.35, 0.52, 0.8), Color("#d6f3ff"))
-	_nitro_btn.button_down.connect(func() -> void: touch_nitro_queued = true)
+	_nitro_btn = _make_thumb_button("NITRO\n33%", Color(0.12, 0.35, 0.52, 0.8), Color("#d6f3ff"))
+	_nitro_btn.button_down.connect(func() -> void: touch_nitro = true)
+	_nitro_btn.button_up.connect(func() -> void: touch_nitro = false)
 	right_pads.add_child(_nitro_btn)
+
+	var btn_bar_bg := ColorRect.new()
+	btn_bar_bg.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	btn_bar_bg.offset_left = 10.0
+	btn_bar_bg.offset_right = -10.0
+	btn_bar_bg.offset_top = -12.0
+	btn_bar_bg.offset_bottom = -6.0
+	btn_bar_bg.color = Color(0.06, 0.14, 0.2, 0.75)
+	btn_bar_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_nitro_btn.add_child(btn_bar_bg)
+
+	_nitro_btn_fill = ColorRect.new()
+	_nitro_btn_fill.anchor_left = 0.0
+	_nitro_btn_fill.anchor_top = 0.0
+	_nitro_btn_fill.anchor_bottom = 1.0
+	_nitro_btn_fill.anchor_right = 0.33
+	_nitro_btn_fill.color = Palette.NITRO_CYAN
+	_nitro_btn_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn_bar_bg.add_child(_nitro_btn_fill)
 
 	var drift_btn := _make_thumb_button("DRIFT", Color(0.76, 0.23, 0.16, 0.82), Palette.PAPER)
 	drift_btn.button_down.connect(func() -> void: touch_handbrake = true)
@@ -1068,7 +1075,7 @@ func _build_title_screen() -> void:
 	center.add_child(title)
 
 	var tagline := Label.new()
-	tagline.text = "Your smoke is your weapon. Slide wide, choke the raiders, grab their scrap.\nHurting them fills your nitrous."
+	tagline.text = "Your smoke is your weapon. Slide wide, choke the raiders, grab their scrap.\nHurting them fills your nitrous bar — hold or feather it to carve sharper drifts."
 	tagline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tagline.add_theme_font_size_override("font_size", 15)
 	tagline.add_theme_color_override("font_color", Color(0.98, 0.94, 0.87, 0.92))
@@ -1083,13 +1090,13 @@ func _build_title_screen() -> void:
 		["TILT PHONE", "Steer (horizon stays level)"],
 		["AUTO GAS", "Hands-free throttle"],
 		["BRAKE / REV", "Left thumb"],
-		["DRIFT · NITRO", "Right thumb"],
+		["DRIFT · NITRO", "Right thumb (hold)"],
 	]))
 	controls_row.add_child(_make_control_card("KEYBOARD · CONTROLLER", [
 		["W / S · RT / LT", "Throttle / Brake"],
 		["A D · STICK", "Steer"],
 		["SPACE · B/X", "Handbrake"],
-		["E · A / ESC · M", "Nitrous · Pause · Mute"],
+		["E · A / ESC · M", "Hold Nitrous · Pause · Mute"],
 	]))
 
 	var btn_wrap := HBoxContainer.new()

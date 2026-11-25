@@ -12,7 +12,7 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 - `scripts/combat.gd`, `scripts/gibs.gd`, `scripts/effects.gd`, `scripts/skid_tracks.gd` — Spiral turret gun, scrap & repair crate pickups with magnet pull, flying vehicle wreckage gibs with soot/fire trails and bouncing/rolling wheels, explosion spheres, shockwave rings, and ring-buffer tyre tracks.
 - `scripts/upgrades.gd` — All 14 upgrades + Field Repair, weighted choice rolling, and stat derivation.
 - `scripts/game_audio.gd` — Procedural synthesized audio (4-gear engine, tyre skid, nitrous roar, explosions, wrecks, screeches, crunches, gunshots, pickups, chimes, warnings) using pre-generated PCM buffers and native `AudioServer` DSP buses.
-- `scripts/gyro_stabilizer.gd`, `scripts/hud.gd`, `shaders/vignette.gdshader`, `scripts/main.gd` — Complete game loop (`Title`, `Playing`, `Level Up`, `Paused`, `Dying`, `Game Over`), nitrous charging & ignition rush, horizon-aware off-screen threat indicators, fixed-to-glass touch controls, gamepad + keyboard support, and live Gyro Tuning drawer.
+- `scripts/gyro_stabilizer.gd`, `scripts/hud.gd`, `shaders/vignette.gdshader`, `scripts/main.gd` — Complete game loop (`Title`, `Playing`, `Level Up`, `Paused`, `Dying`, `Game Over`), continuous hold-to-boost nitrous bar, horizon-aware off-screen threat indicators, fixed-to-glass touch controls, gamepad + keyboard support, and live Gyro Tuning drawer.
 
 ## Controls
 
@@ -20,7 +20,7 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 - **Tilt phone** — Steer (with horizon-locked counter-rotating camera)
 - **AUTO GAS** — Hands-free throttle toggle (ON by default)
 - **BRAKE / REV** — Left thumb pad
-- **NITRO** — Right thumb pad (ignites banked nitrous tank)
+- **NITRO** — Right thumb pad (hold to boost, tap/feather to sharpen drifts)
 - **DRIFT** — Right thumb handbrake pad
 - **GYRO** (top-right) — Live tuning drawer (Screen Lock `100% / 50% / 0%`, Max Tilt, IMU Fusion, Tilt Zoom Comp, Horizon Bar, Invert Roll, Zero Tilt)
 
@@ -28,7 +28,7 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 - `W` / `S` or `↑` / `↓` (or `RT` / `LT`) — Throttle / Brake & Reverse
 - `A` / `D` or `←` / `→` (or Left Stick) — Steer
 - `Space` / `Shift` (or `B` / `X` / `RB`) — Handbrake (Drift)
-- `E` / `N` / `F` (or `A`) — Nitrous
+- `E` / `N` / `F` (or `A`) — Nitrous (hold to boost / feather in drifts)
 - `Esc` / `P` (or `Start`) — Pause, `M` — Mute, `R` — Zero Tilt
 
 ## Running & Exporting to iOS
