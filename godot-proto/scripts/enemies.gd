@@ -593,6 +593,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	var sil_shader: Shader = load("res://shaders/enemy_silhouette.gdshader")
 	var sil_mat := ShaderMaterial.new()
 	sil_mat.shader = sil_shader
+	sil_mat.render_priority = 1
 	enemy_mat.next_pass = sil_mat
 
 	var models := Models.build_enemy_models()

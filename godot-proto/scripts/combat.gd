@@ -65,6 +65,8 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	bullet_mat.albedo_color = Color(1.0, 0.86, 0.4)
 	_bullet_batch = SimMath.InstanceBatch.new(self, Models.build_bullet_model(), bullet_mat, MAX_BULLETS, false, false, "Bullets")
 
+	var sil_shader: Shader = load("res://shaders/enemy_silhouette.gdshader")
+
 	var scrap_mat := StandardMaterial3D.new()
 	scrap_mat.vertex_color_use_as_albedo = true
 	scrap_mat.roughness = 0.85
@@ -72,9 +74,28 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	scrap_mat.emission_enabled = true
 	scrap_mat.emission = Palette.SCRAP * 0.45
 	scrap_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	scrap_mat.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
+	scrap_mat.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
+	scrap_mat.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
+	scrap_mat.stencil_reference = 1
+	var scrap_sil_mat := ShaderMaterial.new()
+	scrap_sil_mat.shader = sil_shader
+	scrap_sil_mat.set_shader_parameter("veil_color", Color(0.95, 0.72, 0.16, 0.78))
+	scrap_sil_mat.render_priority = 3
+	scrap_mat.next_pass = scrap_sil_mat
 	_scrap_batch = SimMath.InstanceBatch.new(self, Models.build_scrap_model(), scrap_mat, MAX_PICKUPS, false, false, "ScrapPickups")
 
-	_repair_batch = SimMath.InstanceBatch.new(self, Models.build_repair_model(), shared_material, 32, false, true, "RepairPickups")
+	var repair_mat: StandardMaterial3D = shared_material.duplicate()
+	repair_mat.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
+	repair_mat.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
+	repair_mat.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
+	repair_mat.stencil_reference = 1
+	var repair_sil_mat := ShaderMaterial.new()
+	repair_sil_mat.shader = sil_shader
+	repair_sil_mat.set_shader_parameter("veil_color", Color(0.24, 0.76, 0.38, 0.82))
+	repair_sil_mat.render_priority = 2
+	repair_mat.next_pass = repair_sil_mat
+	_repair_batch = SimMath.InstanceBatch.new(self, Models.build_repair_model(), repair_mat, 32, false, true, "RepairPickups")
 
 
 func clear() -> void:

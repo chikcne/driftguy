@@ -22,12 +22,19 @@ var _material: StandardMaterial3D
 
 
 func build(shared_material: StandardMaterial3D) -> void:
-	# Write stencil=1 on the player car so occluded enemy silhouettes do not bleed through it
+	# Write stencil=1 on visible player car fragments, and render a flat golden
+	# silhouette when the player car is occluded behind smoke or scenery.
 	_material = shared_material.duplicate()
 	_material.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
 	_material.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
 	_material.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
 	_material.stencil_reference = 1
+	var sil_shader: Shader = load("res://shaders/enemy_silhouette.gdshader")
+	var sil_mat := ShaderMaterial.new()
+	sil_mat.shader = sil_shader
+	sil_mat.set_shader_parameter("veil_color", Color(0.86, 0.56, 0.12, 0.80))
+	sil_mat.render_priority = 0
+	_material.next_pass = sil_mat
 
 	lean = Node3D.new()
 	lean.name = "CarLean"
