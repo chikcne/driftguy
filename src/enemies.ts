@@ -658,6 +658,9 @@ const WAVE_MAX_STEP = 0.28;
 const WAVE_TWO_SIDE_SHARE = 0.75;
 const WAVE_STRAGGLER_CHANCE = 0.1;
 const WAVE_MIN_SHIFT = 0.7;
+const WAVE_FAR_START = 110;
+const WAVE_FAR_FULL = 170;
+const WAVE_FAR_SPEEDUP = 3.5;
 const STRAY_INTERVAL_MIN = 7;
 const STRAY_INTERVAL_MAX = 13;
 const WAR_PARTY_INTERVAL = 60;
@@ -712,6 +715,7 @@ export class Spawner {
   private waveStep = 0.2;
   private waveTotal = 0;
   private readonly waveAngles: number[] = [];
+  private readonly waveMembers: Enemy[] = [];
   private strayTimer = randRange(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX);
   private nextWarParty = WAR_PARTY_INTERVAL;
   private nextBoss = BOSS_INTERVAL;
@@ -726,6 +730,7 @@ export class Spawner {
     this.waveStep = 0.2;
     this.waveTotal = 0;
     this.waveAngles.length = 0;
+    this.waveMembers.length = 0;
     this.strayTimer = randRange(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX);
     this.nextWarParty = WAR_PARTY_INTERVAL;
     this.nextBoss = BOSS_INTERVAL;
@@ -772,19 +777,24 @@ export class Spawner {
         if (enemies.active.length >= MAX_ENEMIES - 15) continue;
         const straggler = this.waveTotal >= 4 && Math.random() < WAVE_STRAGGLER_CHANCE;
         const angle = straggler ? this.pickStragglerAngle() : baseAngle;
-        this.spawnAt(enemies, this.pickKind(time), car, angle, hpScale);
+        const spawned = this.spawnAt(enemies, this.pickKind(time), car, angle, hpScale);
+        if (spawned && !straggler) this.waveMembers.push(spawned);
       }
       return;
     }
 
-    this.waveTimer -= dt;
+    const waveDist = this.nearestWaveDistance(car);
+    const farFactor = waveDist > WAVE_FAR_START ? clamp((waveDist - WAVE_FAR_START) / (WAVE_FAR_FULL - WAVE_FAR_START), 0, 1) : 0;
+    this.waveTimer -= dt * (1 + farFactor * WAVE_FAR_SPEEDUP);
     if (enemies.active.length <= Math.max(1, Math.floor(desired * 0.2))) {
       this.waveTimer = Math.min(this.waveTimer, 1.0);
     }
     if (this.waveTimer > 0) return;
 
-    const deficit = Math.ceil(desired - enemies.active.length);
+    const droveFar = farFactor > 0;
     const minWave = Math.min(3, Math.ceil(desired));
+    const softCap = droveFar ? Math.min(MAX_ENEMIES - 20, Math.ceil(desired * 1.35 + 4)) : desired;
+    const deficit = Math.ceil(softCap - enemies.active.length);
     if (deficit < minWave && enemies.active.length > 0) {
       this.waveTimer = 0.5;
       return;
@@ -796,9 +806,10 @@ export class Spawner {
       return;
     }
 
-    const sector = this.pickNextSector();
+    const sector = droveFar && car.speed > 8 ? this.pickAheadSector(car) : this.pickNextSector();
     this.waveBearing = sector.center;
     this.waveSpread = sector.spread;
+    this.waveMembers.length = 0;
 
     const targetWave = Math.max(minWave, Math.min(deficit, Math.ceil(desired * 0.65 + 1)));
     const count = clamp(targetWave, 1, Math.min(22, room));
@@ -822,6 +833,33 @@ export class Spawner {
 
     const ramp = clamp(time / WAVE_INTERVAL_RAMP, 0, 1);
     this.waveTimer = lerp(WAVE_INTERVAL_START, WAVE_INTERVAL_MIN, ramp);
+  }
+
+  private nearestWaveDistance(car: CarBody): number {
+    let bestSq = Infinity;
+    for (const enemy of this.waveMembers) {
+      if (enemy.hp <= 0) continue;
+      const dx = enemy.x - car.x;
+      const dz = enemy.z - car.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq < bestSq) bestSq = distSq;
+    }
+    return bestSq < Infinity ? Math.sqrt(bestSq) : -1;
+  }
+
+  private pickAheadSector(car: CarBody): WaveSector {
+    const travel = Math.atan2(car.vx, car.vz);
+    const pool = Math.random() < WAVE_TWO_SIDE_SHARE ? CORNER_SECTORS : SIDE_SECTORS;
+    let best = pool[0];
+    let bestDiff = Infinity;
+    for (const sector of pool) {
+      const diff = Math.abs(wrapAngle(sector.center - travel));
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = sector;
+      }
+    }
+    return best;
   }
 
   private updateStragglers(dt: number, time: number, desired: number, car: CarBody, enemies: EnemySystem, hpScale: number): void {

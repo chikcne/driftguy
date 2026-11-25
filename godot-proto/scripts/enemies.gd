@@ -169,6 +169,9 @@ class Spawner:
 	const WAVE_TWO_SIDE_SHARE := 0.75
 	const WAVE_STRAGGLER_CHANCE := 0.1
 	const WAVE_MIN_SHIFT := 0.7
+	const WAVE_FAR_START := 110.0
+	const WAVE_FAR_FULL := 170.0
+	const WAVE_FAR_SPEEDUP := 3.5
 	const STRAY_INTERVAL_MIN := 7.0
 	const STRAY_INTERVAL_MAX := 13.0
 	const WAR_PARTY_INTERVAL := 60.0
@@ -213,6 +216,7 @@ class Spawner:
 	var _wave_step := 0.2
 	var _wave_total := 0
 	var _wave_angles: Array[float] = []
+	var _wave_members: Array[Enemy] = []
 	var _stray_timer := 10.0
 	var _next_war_party := WAR_PARTY_INTERVAL
 	var _next_boss := BOSS_INTERVAL
@@ -227,6 +231,7 @@ class Spawner:
 		_wave_step = 0.2
 		_wave_total = 0
 		_wave_angles.clear()
+		_wave_members.clear()
 		_stray_timer = randf_range(STRAY_INTERVAL_MIN, STRAY_INTERVAL_MAX)
 		_next_war_party = WAR_PARTY_INTERVAL
 		_next_boss = BOSS_INTERVAL
@@ -270,17 +275,23 @@ class Spawner:
 					continue
 				var straggler := _wave_total >= 4 and randf() < WAVE_STRAGGLER_CHANCE
 				var angle := _pick_straggler_angle() if straggler else base_angle
-				_spawn_at(enemies, _pick_kind(time_s), car, angle, hp_scale)
+				var spawned := _spawn_at(enemies, _pick_kind(time_s), car, angle, hp_scale)
+				if spawned != null and not straggler:
+					_wave_members.append(spawned)
 			return
 
-		_wave_timer -= dt
+		var wave_dist := _nearest_wave_distance(car)
+		var far_factor := clampf((wave_dist - WAVE_FAR_START) / (WAVE_FAR_FULL - WAVE_FAR_START), 0.0, 1.0) if wave_dist > WAVE_FAR_START else 0.0
+		_wave_timer -= dt * (1.0 + far_factor * WAVE_FAR_SPEEDUP)
 		if enemies.active.size() <= maxi(1, int(floor(desired * 0.2))):
 			_wave_timer = minf(_wave_timer, 1.0)
 		if _wave_timer > 0.0:
 			return
 
-		var deficit := int(ceil(desired - float(enemies.active.size())))
+		var drove_far := far_factor > 0.0
 		var min_wave := mini(3, int(ceil(desired)))
+		var soft_cap := minf(float(MAX_ENEMIES - 20), ceil(desired * 1.35 + 4.0)) if drove_far else desired
+		var deficit := int(ceil(soft_cap - float(enemies.active.size())))
 		if deficit < min_wave and not enemies.active.is_empty():
 			_wave_timer = 0.5
 			return
@@ -290,9 +301,10 @@ class Spawner:
 			_wave_timer = 0.6
 			return
 
-		var sector := _pick_next_sector()
+		var sector := _pick_ahead_sector(car) if drove_far and car.speed > 8.0 else _pick_next_sector()
 		_wave_bearing = sector[0]
 		_wave_spread = sector[1]
+		_wave_members.clear()
 
 		var target_wave := maxi(min_wave, mini(deficit, int(ceil(desired * 0.65 + 1.0))))
 		var count := clampi(target_wave, 1, mini(22, room))
@@ -314,6 +326,30 @@ class Spawner:
 
 		var ramp := clampf(time_s / WAVE_INTERVAL_RAMP, 0.0, 1.0)
 		_wave_timer = lerpf(WAVE_INTERVAL_START, WAVE_INTERVAL_MIN, ramp)
+
+	func _nearest_wave_distance(car: CarBody) -> float:
+		var best_sq := INF
+		for enemy in _wave_members:
+			if enemy.hp <= 0.0:
+				continue
+			var dx := enemy.x - car.x
+			var dz := enemy.z - car.z
+			var dist_sq := dx * dx + dz * dz
+			if dist_sq < best_sq:
+				best_sq = dist_sq
+		return sqrt(best_sq) if best_sq < INF else -1.0
+
+	func _pick_ahead_sector(car: CarBody) -> Array:
+		var travel := atan2(car.vx, car.vz)
+		var pool: Array = CORNER_SECTORS if randf() < WAVE_TWO_SIDE_SHARE else SIDE_SECTORS
+		var best: Array = pool[0]
+		var best_diff := INF
+		for sector in pool:
+			var diff := absf(SimMath.wrap_angle(sector[0] - travel))
+			if diff < best_diff:
+				best_diff = diff
+				best = sector
+		return best
 
 	func _update_stragglers(dt: float, time_s: float, desired: float, car: CarBody, enemies: EnemySystem, hp_scale: float) -> void:
 		_stray_timer -= dt
