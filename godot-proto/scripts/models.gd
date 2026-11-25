@@ -154,16 +154,15 @@ static func build_enemy_models() -> Dictionary:
 
 static func build_scrap_model() -> ArrayMesh:
 	return ModelKit.new() \
-		.cylinder(0.7, 0.7, 0.2, 6, Vector3.ZERO, Palette.SCRAP, Vector3(HALF_PI, 0.0, 0.0)) \
+		.cylinder(0.7, 0.7, 0.2, 6, Vector3.ZERO, Palette.SCRAP_PICKUP, Vector3(HALF_PI, 0.0, 0.0)) \
 		.box(Vector3(0.26, 0.26, 0.26), Vector3.ZERO, Palette.METAL_DARK) \
 		.build()
 
 
 static func build_repair_model() -> ArrayMesh:
 	return ModelKit.new() \
-		.box(Vector3(0.9, 0.9, 0.5), Vector3.ZERO, Palette.CAR_BODY) \
-		.box(Vector3(0.7, 0.22, 0.54), Vector3.ZERO, Palette.REPAIR) \
-		.box(Vector3(0.22, 0.7, 0.54), Vector3.ZERO, Palette.REPAIR) \
+		.box(Vector3(1.4, 0.44, 0.48), Vector3.ZERO, Palette.REPAIR) \
+		.box(Vector3(0.44, 1.4, 0.48), Vector3.ZERO, Palette.REPAIR) \
 		.build()
 
 

@@ -46,6 +46,7 @@ class Pickup:
 	var value: float
 	var phase: float
 	var attracted: bool
+	var spawned: bool = false
 
 
 var turret_angle := 0.0
@@ -72,7 +73,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	scrap_mat.roughness = 0.85
 	scrap_mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	scrap_mat.emission_enabled = true
-	scrap_mat.emission = Palette.SCRAP * 0.45
+	scrap_mat.emission = Palette.SCRAP_PICKUP * 0.55
 	scrap_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	scrap_mat.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
 	scrap_mat.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
@@ -80,22 +81,28 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	scrap_mat.stencil_reference = 1
 	var scrap_sil_mat := ShaderMaterial.new()
 	scrap_sil_mat.shader = sil_shader
-	scrap_sil_mat.set_shader_parameter("veil_color", Color(0.96, 0.64, 0.02, 0.94))
+	scrap_sil_mat.set_shader_parameter("veil_color", Color(0.06, 0.55, 0.96, 0.94))
 	scrap_sil_mat.render_priority = 3
 	scrap_mat.next_pass = scrap_sil_mat
 	_scrap_batch = SimMath.InstanceBatch.new(self, Models.build_scrap_model(), scrap_mat, MAX_PICKUPS, false, false, "ScrapPickups")
 
 	var repair_mat: StandardMaterial3D = shared_material.duplicate()
+	repair_mat.emission_enabled = true
+	repair_mat.emission = Palette.REPAIR * 0.35
 	repair_mat.stencil_mode = BaseMaterial3D.STENCIL_MODE_CUSTOM
 	repair_mat.stencil_flags = BaseMaterial3D.STENCIL_FLAG_WRITE
 	repair_mat.stencil_compare = BaseMaterial3D.STENCIL_COMPARE_ALWAYS
 	repair_mat.stencil_reference = 1
 	var repair_sil_mat := ShaderMaterial.new()
 	repair_sil_mat.shader = sil_shader
-	repair_sil_mat.set_shader_parameter("veil_color", Color(0.24, 0.76, 0.38, 0.82))
+	repair_sil_mat.set_shader_parameter("veil_color", Color(0.14, 0.88, 0.36, 0.90))
 	repair_sil_mat.render_priority = 2
 	repair_mat.next_pass = repair_sil_mat
-	_repair_batch = SimMath.InstanceBatch.new(self, Models.build_repair_model(), repair_mat, 32, false, true, "RepairPickups")
+	_repair_batch = SimMath.InstanceBatch.new(self, Models.build_repair_model(), repair_mat, 64, false, true, "RepairPickups")
+
+
+func get_pickups() -> Array[Pickup]:
+	return _pickups
 
 
 func clear() -> void:
@@ -113,7 +120,6 @@ func update_gun(
 	stats: Upgrades.Stats,
 	enemies: EnemySystem,
 	on_shot: Callable,
-	hit_barrels: Callable,
 ) -> void:
 	if stats.gun_barrels > 0:
 		var interval := 1.0 / stats.gun_fire_rate
@@ -148,8 +154,6 @@ func update_gun(
 		b.x += b.vx * dt
 		b.z += b.vz * dt
 		var spent := b.life <= 0.0
-		if not spent and hit_barrels.is_valid():
-			spent = hit_barrels.call(b.x, b.z, BULLET_RADIUS)
 		if not spent:
 			for enemy in enemies.active:
 				var reach := enemy.spec.radius + BULLET_RADIUS
@@ -185,10 +189,11 @@ func drop_pickup(kind: String, x: float, z: float, pieces: int, value_each: floa
 		p.value = value_each
 		p.phase = randf() * TAU
 		p.attracted = false
+		p.spawned = false
 		_pickups.append(p)
 
 
-func place_pickup(kind: String, x: float, z: float, value: float) -> void:
+func place_pickup(kind: String, x: float, z: float, value: float, spawned: bool = true) -> void:
 	if _pickups.size() >= MAX_PICKUPS:
 		return
 	var p := Pickup.new()
@@ -200,7 +205,20 @@ func place_pickup(kind: String, x: float, z: float, value: float) -> void:
 	p.value = value
 	p.phase = randf() * TAU
 	p.attracted = false
+	p.spawned = spawned
 	_pickups.append(p)
+
+
+func place_pickup_cluster(kind: String, x: float, z: float, pieces: int, value_each: float) -> void:
+	if pieces <= 1:
+		place_pickup(kind, x, z, value_each, true)
+		return
+	var base_angle := randf() * TAU
+	var ring_r := 0.95
+	for i in pieces:
+		var angle := base_angle + (float(i) / float(pieces)) * TAU + randf_range(-0.2, 0.2)
+		var dist := ring_r * randf_range(0.8, 1.15)
+		place_pickup(kind, x + sin(angle) * dist, z + cos(angle) * dist, value_each, true)
 
 
 func update_pickups(dt: float, car: CarBody, magnet_radius: float, on_collect: Callable) -> void:
@@ -254,6 +272,6 @@ func render_all(time_s: float) -> void:
 			_scrap_batch.push(item.x, y, item.z, spin, 0.4, 0.0, sz, sz, sz)
 		else:
 			var sz := 2.0 if item.value > REPAIR_DROP_VALUE else 1.2
-			_repair_batch.push(item.x, y + 0.2, item.z, spin, 0.0, 0.0, sz, sz, sz)
+			_repair_batch.push(item.x, y + 0.55 * sz, item.z, spin, 0.0, 0.0, sz, sz, sz)
 	_scrap_batch.commit()
 	_repair_batch.commit()

@@ -142,8 +142,6 @@ var _cb_wreck: Callable
 var _cb_bump: Callable
 var _cb_scrape: Callable
 var _cb_kill: Callable
-var _cb_hit_barrels: Callable
-var _cb_barrel_break: Callable
 var _cb_collect: Callable
 var _cb_shot: Callable
 var _cb_throw_pipe: Callable
@@ -233,13 +231,12 @@ func _ready() -> void:
 	_cb_bump = Callable(self, "_on_enemy_bumped")
 	_cb_scrape = Callable(self, "_on_enemy_scrape")
 	_cb_kill = Callable(self, "_on_enemy_killed")
-	_cb_hit_barrels = Callable(self, "_hit_barrels")
-	_cb_barrel_break = Callable(self, "_on_barrel_broken")
 	_cb_collect = Callable(self, "_collect")
 	_cb_shot = Callable(_audio, "shot")
 	_cb_throw_pipe = Callable(_gibs, "throw_pipe")
 	_cb_pipe_hit = Callable(self, "_on_pipe_hit")
 	_cb_akira = Callable(self, "_on_enemy_akira")
+	_world.on_spawn_cache = Callable(self, "_on_spawn_cache")
 	_spawner.on_threat = Callable(self, "_on_threat")
 
 	_reset_run()
@@ -518,7 +515,7 @@ func _simulate(dt: float) -> void:
 		_cb_akira,
 	)
 	_world.step_world(dt, _car.x, _car.z)
-	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot, _cb_hit_barrels)
+	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot)
 	_enemies.sweep_dead(_cb_wreck, _cb_kill)
 	_update_blasts(dt)
 	_gather_nitrous()
@@ -547,7 +544,7 @@ func _simulate(dt: float) -> void:
 		_smoke_output,
 		Engine.get_frames_per_second(),
 	)
-	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _car, _camera)
+	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _combat.get_pickups(), _car, _camera)
 	_hud.set_threats(_spawner.threats, _stabilizer.display_roll)
 	var nitro_fill := 0.0
 	if _nitro_burn > 0.0:
@@ -638,7 +635,6 @@ func _emit_exhaust_flames(dt: float) -> void:
 
 
 func _collide_car_with_world() -> void:
-	_hit_barrels(_car.x, _car.z, CAR_RADIUS)
 	_plough_through_plants()
 	if not _world.resolve(_car, CAR_RADIUS, _contact).hit:
 		return
@@ -891,7 +887,6 @@ func _update_blasts(dt: float) -> void:
 
 
 func _detonate(x: float, z: float, radius: float, damage: float) -> void:
-	_hit_barrels(x, z, radius)
 	_fireball(x, z, radius)
 	if damage > 0.0:
 		_enemies.hurt_area(x, z, radius, damage)
@@ -938,14 +933,8 @@ func _update_crates(dt: float) -> void:
 	_combat.place_pickup("repair", spot["x"], spot["z"], Combat.REPAIR_CRATE_VALUE)
 
 
-func _hit_barrels(x: float, z: float, radius: float) -> bool:
-	return _world.break_barrels(x, z, radius, _cb_barrel_break)
-
-
-func _on_barrel_broken(bx: float, bz: float) -> void:
-	_combat.drop_pickup("scrap", bx, bz, Combat.BARREL_SCRAP_PIECES, 1.0)
-	_gibs.sparks(bx, DesertTerrain.ground_height(bx, bz) + 0.7, bz, 8, 12.0, 0.0, 0.0)
-	_audio.thud(0.4)
+func _on_spawn_cache(bx: float, bz: float) -> void:
+	_combat.place_pickup_cluster("scrap", bx, bz, Combat.BARREL_SCRAP_PIECES, 1.0)
 
 
 func _collect(kind: String, value: float) -> void:

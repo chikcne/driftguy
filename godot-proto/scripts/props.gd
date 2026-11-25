@@ -5,7 +5,6 @@ extends RefCounted
 # collider definitions, underground root meshes, loose physics specs, and tire stacks.
 
 const HALF_PI := PI * 0.5
-const BARREL_SCALE := 1.44224957 # cbrt(3)
 const TIRE_DIAMETER := 1.1
 const TIRE_HEIGHT := 0.36
 const TIRE_TREAD_POINTS := 8
@@ -221,12 +220,6 @@ static func build_props() -> Dictionary:
 		.cylinder(0.06, 0.14, 1.3, 5, Vector3(0.0, 3.8, -0.4), Palette.DEAD_WOOD, Vector3(-0.7, 0.0, 0.0)) \
 		.build()
 
-	var barrel := kit \
-		.cylinder(0.7, 0.7, 1.0, 8, Vector3(0.0, 0.5, 0.0), Palette.RAIDER_RED) \
-		.cylinder(0.74, 0.74, 0.1, 8, Vector3(0.0, 0.72, 0.0), Palette.RUST_DARK) \
-		.cylinder(0.74, 0.74, 0.1, 8, Vector3(0.0, 0.28, 0.0), Palette.RUST_DARK) \
-		.build()
-
 	var rib_spacing := 1.7
 	for i in 5:
 		var z := float(i - 2) * rib_spacing
@@ -285,7 +278,6 @@ static func build_props() -> Dictionary:
 		"wall": PropDef.new("wall", wall, wall_cols, 1.0, 1.3),
 		"cactus": PropDef.new("cactus", cactus, _solid(0.45), 0.8, 1.5, true, 0.1, _stalk(0.2, 3.2, 0.45, cactus_limbs), RootSpec.new(9.0, 4.5)),
 		"deadTree": PropDef.new("deadTree", dead_tree, _solid(0.4), 0.9, 1.6, true, 0.1, _stalk(0.15, 3.4, 0.32, tree_limbs), RootSpec.new(10.0, 5.0)),
-		"barrel": PropDef.new("barrel", barrel, _solid(0.45), BARREL_SCALE, 1.1 * BARREL_SCALE),
 		"ribs": PropDef.new("ribs", ribs, _no_colliders(), 0.9, 1.6, true, 0.3),
 		"pylon": PropDef.new("pylon", pylon, _solid(0.35), 1.0, 1.2),
 		"pebble": PropDef.new("pebble", pebble, _no_colliders(), 0.5, 1.6, false, 0.0),

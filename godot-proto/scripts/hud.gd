@@ -24,7 +24,7 @@ const THREAT_TAG_OFFSET := 54.0
 const ENEMY_EDGE_SIDE_MARGIN := 30.0
 const ENEMY_EDGE_VERTICAL_MARGIN := 26.0
 const INDICATOR_MAX_RANGE := 185.0
-const INDICATOR_CLOSE_RANGE := 45.0
+const INDICATOR_CLOSE_RANGE := 30.0
 const INDICATOR_CLUSTER_ANGLE := 0.22
 const INDICATOR_MAX_COUNT := 16
 const INDICATOR_ONSCREEN_PAD := 14.0
@@ -124,6 +124,7 @@ class EnemyArrowsOverlay:
 			var sc: float = a["scale"]
 			var alpha: float = a["alpha"]
 			var pack: bool = a["pack"]
+			var base_color: Color = a.get("color", Palette.CAR_STRIPE)
 			draw_set_transform(pos, angle, Vector2(sc, sc))
 			var ink := Color(Palette.INK.r, Palette.INK.g, Palette.INK.b, alpha)
 			if pack:
@@ -147,8 +148,8 @@ class EnemyArrowsOverlay:
 				Vector2(-w * 0.5, h * 0.5),
 				Vector2(-w * 0.16, 0.0),
 			])
-			var flame := Color(Palette.CAR_STRIPE.r, Palette.CAR_STRIPE.g, Palette.CAR_STRIPE.b, alpha)
-			draw_colored_polygon(pts, flame)
+			var fill := Color(base_color.r, base_color.g, base_color.b, alpha)
+			draw_colored_polygon(pts, fill)
 			draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), ink, 2.2, true)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
@@ -397,7 +398,7 @@ func clear_enemy_indicators() -> void:
 	_enemy_arrows.queue_redraw()
 
 
-func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: Camera3D) -> void:
+func set_enemy_indicators(enemies: Array, threats: Array, pickups: Array, car: CarBody, camera: Camera3D) -> void:
 	if _enemy_arrows == null or camera == null:
 		return
 	var vp_size := _root.get_viewport_rect().size
@@ -415,17 +416,53 @@ func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: 
 	var reach_y := maxf(1.0, half_h - ENEMY_EDGE_VERTICAL_MARGIN)
 	var inv_cam := camera.global_transform.affine_inverse()
 
-	var candidates: Array = []
+	var scrap_points: Array[Vector2] = []
+	var repair_points: Array[Vector2] = []
+	for item: Combat.Pickup in pickups:
+		if not item.spawned:
+			continue
+		if item.kind == "scrap":
+			scrap_points.append(Vector2(item.x, item.z))
+		else:
+			repair_points.append(Vector2(item.x, item.z))
+
+	var enemy_points: Array[Vector2] = []
 	for enemy: EnemySystem.Enemy in enemies:
 		if tracked.has(enemy):
 			continue
-		var ddx := enemy.x - car.x
-		var ddz := enemy.z - car.z
+		enemy_points.append(Vector2(enemy.x, enemy.z))
+
+	_enemy_arrows.arrows.clear()
+	_append_indicator_arrows(scrap_points, false, Palette.SCRAP_PICKUP, car, camera, inv_cam, vp_size, half_w, half_h, reach_x, reach_y)
+	_append_indicator_arrows(repair_points, false, Palette.REPAIR, car, camera, inv_cam, vp_size, half_w, half_h, reach_x, reach_y)
+	_append_indicator_arrows(enemy_points, true, Palette.CAR_STRIPE, car, camera, inv_cam, vp_size, half_w, half_h, reach_x, reach_y)
+	_enemy_arrows.queue_redraw()
+
+
+func _append_indicator_arrows(
+	points: Array[Vector2],
+	allow_pack: bool,
+	color: Color,
+	car: CarBody,
+	camera: Camera3D,
+	inv_cam: Transform3D,
+	vp_size: Vector2,
+	half_w: float,
+	half_h: float,
+	reach_x: float,
+	reach_y: float,
+) -> void:
+	if points.is_empty():
+		return
+	var candidates: Array = []
+	for pt: Vector2 in points:
+		var ddx := pt.x - car.x
+		var ddz := pt.y - car.z
 		var dist := sqrt(ddx * ddx + ddz * ddz)
 		if dist > INDICATOR_MAX_RANGE:
 			continue
 
-		var world_pos := Vector3(enemy.x, DesertTerrain.ground_height(enemy.x, enemy.z) + 1.0, -enemy.z)
+		var world_pos := Vector3(pt.x, DesertTerrain.ground_height(pt.x, pt.y) + 1.0, -pt.y)
 		var cam_local := inv_cam * world_pos
 		var sx := 0.0
 		var sy := 0.0
@@ -450,6 +487,9 @@ func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: 
 		var ux := sx / slen
 		var uy := sy / slen
 		candidates.append([dist, ux, uy, atan2(uy, ux)])
+
+	if candidates.is_empty():
+		return
 
 	candidates.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
 
@@ -477,7 +517,6 @@ func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: 
 		elif clusters.size() < INDICATOR_MAX_COUNT:
 			clusters.append([ux * weight, uy * weight, angle, dist, 1])
 
-	_enemy_arrows.arrows.clear()
 	for cl: Array in clusters:
 		var angle: float = cl[2]
 		var min_dist: float = cl[3]
@@ -486,17 +525,17 @@ func set_enemy_indicators(enemies: Array, threats: Array, car: CarBody, camera: 
 		var dir_y := sin(angle)
 		var reach := minf(reach_x / maxf(absf(dir_x), 0.0001), reach_y / maxf(absf(dir_y), 0.0001))
 		var closeness := SimMath.saturate((INDICATOR_MAX_RANGE - min_dist) / (INDICATOR_MAX_RANGE - INDICATOR_CLOSE_RANGE))
-		var pack := count >= 3
-		var sc := (0.76 + 0.38 * closeness) * (1.15 if pack else 1.0)
-		var alpha := 0.55 + 0.41 * closeness
+		var pack := allow_pack and count >= 3
+		var sc := lerpf(0.48, 1.50, closeness) * (1.12 if pack else 1.0)
+		var alpha := 0.62 + 0.36 * closeness
 		_enemy_arrows.arrows.append({
 			"pos": Vector2(half_w + dir_x * reach, half_h + dir_y * reach),
 			"angle": angle,
 			"scale": sc,
 			"alpha": alpha,
 			"pack": pack,
+			"color": color,
 		})
-	_enemy_arrows.queue_redraw()
 
 
 func set_threats(threats: Array, display_roll: float) -> void:

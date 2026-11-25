@@ -28,7 +28,7 @@ const SCATTER_TABLE := [
 	["ribs", 0.5],
 	["pylon", 0.8],
 	["wall", 0.7],
-	["barrel", 0.8],
+	["pickup_cache", 0.8],
 ]
 const SCATTER_TOTAL := 20.8
 
@@ -61,32 +61,16 @@ const AVOID_ANGLES := [
 const AVOID_MAX_OBS := 48
 
 
-class BreakableBarrel:
-	extends RefCounted
-	var id: String
-	var list: Array # Array[Transform3D]
-	var index: int
-	var destroyed: bool = false
-
-	func _init(p_id: String, p_list: Array, p_index: int, p_destroyed: bool) -> void:
-		id = p_id
-		list = p_list
-		index = p_index
-		destroyed = p_destroyed
-
-
 class Collider:
 	extends RefCounted
 	var x: float
 	var z: float
 	var r: float
-	var barrel: BreakableBarrel # nullable
 
-	func _init(px: float, pz: float, pr: float, p_barrel: BreakableBarrel = null) -> void:
+	func _init(px: float, pz: float, pr: float) -> void:
 		x = px
 		z = pz
 		r = pr
-		barrel = p_barrel
 
 
 class Rooted:
@@ -123,7 +107,10 @@ class ChunkData:
 	var placements: Dictionary = {} # String -> Array[Transform3D]
 	var colliders: Array[Collider] = []
 	var rooted: Array[Rooted] = []
+	var cache_count: int = 0
 
+
+var on_spawn_cache: Callable
 
 var _props: Dictionary = {} # String -> Props.PropDef
 var _prop_meshes: Dictionary = {} # String -> MultiMeshInstance3D
@@ -132,7 +119,7 @@ var _chunks: Dictionary = {} # Vector2i -> ChunkData
 var _collider_grid: Dictionary = {} # Vector2i -> Array[Collider]
 var _rooted_grid: Dictionary = {} # Vector2i -> Array[Rooted]
 var _uprooted: Dictionary = {} # int -> bool
-var _broken_barrels: Dictionary = {} # String -> bool
+var _spawned_caches: Dictionary = {} # String -> bool
 var _loose := LooseSystem.new()
 var _swaying: Array[Rooted] = []
 var _strain := Roots.StrainResult.new()
@@ -183,7 +170,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 func reset_world() -> void:
 	_loose.clear()
 	_uprooted.clear()
-	_broken_barrels.clear()
+	_spawned_caches.clear()
 	_swaying.clear()
 	for chunk: ChunkData in _chunks.values():
 		_dispose_chunk(chunk)
@@ -306,37 +293,6 @@ func update_around(sim_x: float, sim_z: float) -> void:
 	_rebuild_collider_grid()
 
 
-func break_barrels(sim_x: float, sim_z: float, radius: float, on_break: Callable) -> bool:
-	var hit := false
-	var min_x := int(floor((sim_x - radius) / COLLIDER_CELL))
-	var max_x := int(floor((sim_x + radius) / COLLIDER_CELL))
-	var min_z := int(floor((sim_z - radius) / COLLIDER_CELL))
-	var max_z := int(floor((sim_z + radius) / COLLIDER_CELL))
-	for gz in range(min_z, max_z + 1):
-		for gx in range(min_x, max_x + 1):
-			var key := Vector2i(gx, gz)
-			if not _collider_grid.has(key):
-				continue
-			var bucket: Array = _collider_grid[key]
-			for col: Collider in bucket:
-				var barrel := col.barrel
-				if barrel == null or barrel.destroyed:
-					continue
-				var dx := sim_x - col.x
-				var dz := sim_z - col.z
-				var reach := radius + col.r
-				if dx * dx + dz * dz > reach * reach:
-					continue
-				barrel.destroyed = true
-				_broken_barrels[barrel.id] = true
-				barrel.list[barrel.index] = Transform3D(Basis.from_scale(Vector3.ZERO), Vector3(0.0, -9999.0, 0.0))
-				on_break.call(col.x, col.z)
-				hit = true
-	if hit:
-		_rebuild_instances_of("barrel")
-	return hit
-
-
 func resolve(body: Variant, radius: float, contact: Contact) -> Contact:
 	contact.hit = false
 	var min_x := int(floor((body.x - radius) / COLLIDER_CELL))
@@ -350,8 +306,6 @@ func resolve(body: Variant, radius: float, contact: Contact) -> Contact:
 				continue
 			var bucket: Array = _collider_grid[key]
 			for col: Collider in bucket:
-				if col.barrel != null and col.barrel.destroyed:
-					continue
 				var dx: float = body.x - col.x
 				var dz: float = body.z - col.z
 				var reach := radius + col.r
@@ -426,17 +380,14 @@ func steer_around_obstacles(
 			if _collider_grid.has(key):
 				var bucket: Array = _collider_grid[key]
 				for col: Collider in bucket:
-					if col.barrel != null and col.barrel.destroyed:
-						continue
 					var rx := col.x - x
 					var rz := col.z - z
 					if rx * rx + rz * rz > max_range_sq:
 						continue
 					if obs_count < AVOID_MAX_OBS:
-						var extra := 1.35 if col.barrel != null else 0.9
 						_avoid_obs_x[obs_count] = rx
 						_avoid_obs_z[obs_count] = rz
-						_avoid_obs_r[obs_count] = col.r + radius + extra
+						_avoid_obs_r[obs_count] = col.r + radius + 0.9
 						obs_count += 1
 			if _rooted_grid.has(key):
 				var rbucket: Array = _rooted_grid[key]
@@ -589,9 +540,9 @@ func _place_outpost(chunk: ChunkData, x: float, z: float, rng: SimMath.SeededRng
 	_place(chunk, "wall", x + sin(facing + 3.6) * 14.0, z + cos(facing + 3.6) * 14.0, facing + 3.6 + PI * 0.5, rng)
 	_place(chunk, "wreck", x + sin(facing + 4.6) * 8.0, z + cos(facing + 4.6) * 8.0, rng.next() * TAU, rng)
 	_place_stack(chunk, Props.TIRE_STACK, Props.TIRE_STACK_FOOTPRINT, x + sin(facing + 1.0) * 6.5, z + cos(facing + 1.0) * 6.5, rng.next() * TAU, rng)
-	_place(chunk, "barrel", x + sin(facing + 5.4) * 5.2, z + cos(facing + 5.4) * 5.2, 0.0, rng)
-	_place(chunk, "barrel", x + sin(facing + 5.65) * 6.1, z + cos(facing + 5.65) * 6.1, 0.0, rng)
-	_place(chunk, "barrel", x + sin(facing + 1.5) * 10.5, z + cos(facing + 1.5) * 10.5, 0.0, rng)
+	_place(chunk, "pickup_cache", x + sin(facing + 5.4) * 5.2, z + cos(facing + 5.4) * 5.2, 0.0, rng)
+	_place(chunk, "pickup_cache", x + sin(facing + 5.65) * 6.1, z + cos(facing + 5.65) * 6.1, 0.0, rng)
+	_place(chunk, "pickup_cache", x + sin(facing + 1.5) * 10.5, z + cos(facing + 1.5) * 10.5, 0.0, rng)
 	_place(chunk, "pylon", x + sin(facing + 5.0) * 11.5, z + cos(facing + 5.0) * 11.5, facing, rng)
 
 
@@ -641,6 +592,17 @@ func _place(
 	stack_y: float = 0.0,
 	stack_group: Array = [],
 ) -> bool:
+	if prop_name == "pickup_cache":
+		if not _fits(chunk, x, z, 0.75):
+			return false
+		var cache_id := "%d:%d:%d" % [chunk.cx, chunk.cz, chunk.cache_count]
+		chunk.cache_count += 1
+		if not _spawned_caches.has(cache_id):
+			_spawned_caches[cache_id] = true
+			if on_spawn_cache.is_valid():
+				on_spawn_cache.call(x, z)
+		return true
+
 	var prop: Props.PropDef = _props[prop_name]
 	var scale := stack_scale if is_stack else lerpf(prop.min_scale, prop.max_scale, rng.next())
 	if not is_stack and prop.colliders.size() > 0:
@@ -659,10 +621,6 @@ func _place(
 		chunk.placements[prop_name] = list
 
 	var slot_index := list.size()
-	var barrel: BreakableBarrel = null
-	if prop_name == "barrel":
-		var barrel_id := "%d:%d:%d" % [chunk.cx, chunk.cz, slot_index]
-		barrel = BreakableBarrel.new(barrel_id, list, slot_index, _broken_barrels.has(barrel_id))
 
 	var s := sin(yaw)
 	var c := cos(yaw)
@@ -672,7 +630,6 @@ func _place(
 				x + (local.x * c + local.z * s) * scale,
 				z + (-local.x * s + local.z * c) * scale,
 				local.r * scale,
-				barrel,
 			))
 
 	var squash := 1.0 if is_stack else lerpf(0.85, 1.15, rng.next())
@@ -708,8 +665,6 @@ func _place(
 			return true
 
 	var xform := SimMath.sim_transform(x, y, z, yaw, 0.0, 0.0, scale, scale * squash, scale)
-	if barrel != null and barrel.destroyed:
-		xform = Transform3D(Basis.from_scale(Vector3.ZERO), Vector3(0.0, -9999.0, 0.0))
 	list.append(xform)
 	return true
 
