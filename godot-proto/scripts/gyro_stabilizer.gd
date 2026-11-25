@@ -16,6 +16,14 @@ extends RefCounted
 # On desktop (where no IMU is present), keyboard A/D or Left/Right simulates
 # turning the phone like a steering wheel so counter-rotation can be previewed.
 
+# Screens at or above iPad mini dimensions (744x1133 pt on 6th/7th gen,
+# 768x1024 pt on 1st-5th gen; ~7.9"-8.3") disable gyro & counter-rotation by default.
+# Largest phones (e.g. iPhone 16 Pro Max) are ~440x956 pt (~6.9").
+const LARGE_SCREEN_MIN_SHORT_PT := 700.0
+const LARGE_SCREEN_MIN_LONG_PT := 1000.0
+const LARGE_SCREEN_MIN_INCHES := 7.5
+
+var gyro_enabled := true
 var max_steer_deg := 38.0
 var deadzone_deg := 2.5
 var steer_curve := 1.25
@@ -38,6 +46,46 @@ var _initialized := false
 var _sim_roll := 0.0
 
 
+func apply_screen_defaults() -> void:
+	if is_large_screen():
+		gyro_enabled = false
+		counter_rotate_scale = 0.0
+	else:
+		gyro_enabled = true
+		counter_rotate_scale = 1.0
+
+
+static func is_large_screen() -> bool:
+	var screen_idx := DisplayServer.window_get_current_screen()
+	if screen_idx < 0:
+		screen_idx = DisplayServer.get_primary_screen()
+	var screen_px := Vector2(DisplayServer.screen_get_size(screen_idx))
+	if screen_px.x <= 0.0 or screen_px.y <= 0.0:
+		screen_px = Vector2(DisplayServer.window_get_size())
+	var screen_scale := DisplayServer.screen_get_scale(screen_idx)
+	var screen_dpi := DisplayServer.screen_get_dpi(screen_idx)
+	return is_large_screen_metrics(screen_px, screen_scale, screen_dpi)
+
+
+static func is_large_screen_metrics(screen_px: Vector2, screen_scale: float, screen_dpi: int) -> bool:
+	if screen_px.x <= 0.0 or screen_px.y <= 0.0:
+		return false
+	var effective_scale := screen_scale
+	if OS.has_feature("android") and effective_scale <= 1.0 and screen_dpi > 160:
+		effective_scale = float(screen_dpi) / 160.0
+	effective_scale = maxf(effective_scale, 1.0)
+	var logical := screen_px / effective_scale
+	var short_pt := minf(logical.x, logical.y)
+	var long_pt := maxf(logical.x, logical.y)
+	if short_pt >= LARGE_SCREEN_MIN_SHORT_PT and long_pt >= LARGE_SCREEN_MIN_LONG_PT:
+		return true
+	if screen_dpi >= 120 and effective_scale <= 1.01:
+		var diag_inches := screen_px.length() / float(screen_dpi)
+		if diag_inches >= LARGE_SCREEN_MIN_INCHES:
+			return true
+	return false
+
+
 func recenter() -> void:
 	zero_offset = fused_roll
 
@@ -47,6 +95,11 @@ func reset_zero() -> void:
 
 
 func update(dt: float, sim_left: bool, sim_right: bool, sim_hold_left: bool, sim_hold_right: bool) -> void:
+	if not gyro_enabled and counter_rotate_scale <= 0.0:
+		steer_output = 0.0
+		display_roll = 0.0
+		return
+
 	raw_gyro = Input.get_gyroscope()
 	raw_gravity = Input.get_gravity()
 
@@ -64,15 +117,18 @@ func update(dt: float, sim_left: bool, sim_right: bool, sim_hold_left: bool, sim
 	var sign_mult := -1.0 if invert_gyro else 1.0
 	var signed_roll := relative_roll * sign_mult
 
-	# Map roll angle -> [-1, 1] steering with deadzone and gentle non-linear curve
-	var max_rad := deg_to_rad(maxf(10.0, max_steer_deg))
-	var dead_rad := deg_to_rad(deadzone_deg)
-	var mag := absf(signed_roll)
-	if mag <= dead_rad:
-		steer_output = 0.0
+	if gyro_enabled:
+		# Map roll angle -> [-1, 1] steering with deadzone and gentle non-linear curve
+		var max_rad := deg_to_rad(maxf(10.0, max_steer_deg))
+		var dead_rad := deg_to_rad(deadzone_deg)
+		var mag := absf(signed_roll)
+		if mag <= dead_rad:
+			steer_output = 0.0
+		else:
+			var norm := clampf((mag - dead_rad) / maxf(0.01, max_rad - dead_rad), 0.0, 1.0)
+			steer_output = signf(signed_roll) * pow(norm, steer_curve)
 	else:
-		var norm := clampf((mag - dead_rad) / maxf(0.01, max_rad - dead_rad), 0.0, 1.0)
-		steer_output = signf(signed_roll) * pow(norm, steer_curve)
+		steer_output = 0.0
 
 	# Counter-rotation uses the true physical roll (so screen stays level with gravity)
 	display_roll = signed_roll * counter_rotate_scale

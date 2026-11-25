@@ -83,6 +83,7 @@ var _horizon_angle_label: Label
 # Gyro tuning drawer
 var _tuning_panel: PanelContainer
 var _telemetry_label: Label
+var _gyro_btn: Button
 var _lock_btn: Button
 var _tilt_btn: Button
 var _fusion_btn: Button
@@ -184,6 +185,7 @@ class ThreatMarker:
 
 func setup(stabilizer: GyroStabilizer) -> void:
 	_stabilizer = stabilizer
+	_lock_idx = _find_lock_idx(_stabilizer.counter_rotate_scale)
 	layer = 10
 
 	_root = Control.new()
@@ -992,6 +994,14 @@ func _build_gyro_drawer(holder: VBoxContainer, toggle_btn: Button) -> void:
 	list.add_theme_constant_override("separation", 5)
 	_tuning_panel.add_child(list)
 
+	_gyro_btn = _make_pill_button(
+		"Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF"),
+		Color("#3c2823"),
+		Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER,
+	)
+	_gyro_btn.pressed.connect(_toggle_gyro)
+	list.add_child(_gyro_btn)
+
 	_lock_btn = _make_pill_button("Screen Lock: " + LOCK_LABELS[_lock_idx], Color("#3c2823"), Palette.SCRAP)
 	_lock_btn.pressed.connect(_cycle_lock)
 	list.add_child(_lock_btn)
@@ -1297,10 +1307,27 @@ func _add_threat_marker() -> ThreatMarker:
 	return m
 
 
+func _toggle_gyro() -> void:
+	_stabilizer.gyro_enabled = not _stabilizer.gyro_enabled
+	_gyro_btn.text = "Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF")
+	_gyro_btn.add_theme_color_override("font_color", Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER)
+
+
 func _cycle_lock() -> void:
 	_lock_idx = (_lock_idx + 1) % LOCK_MODES.size()
 	_stabilizer.counter_rotate_scale = LOCK_MODES[_lock_idx]
 	_lock_btn.text = "Screen Lock: " + LOCK_LABELS[_lock_idx]
+
+
+static func _find_lock_idx(scale: float) -> int:
+	var best_idx := 0
+	var best_dist := INF
+	for i in LOCK_MODES.size():
+		var dist := absf(LOCK_MODES[i] - scale)
+		if dist < best_dist:
+			best_dist = dist
+			best_idx = i
+	return best_idx
 
 
 func _cycle_tilt() -> void:

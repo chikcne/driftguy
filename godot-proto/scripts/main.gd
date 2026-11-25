@@ -204,6 +204,8 @@ func _ready() -> void:
 	add_child(_car_model)
 	_car_model.build(shared_mat)
 
+	_stabilizer.apply_screen_defaults()
+
 	_hud = GameHud.new()
 	_hud.name = "GameHud"
 	add_child(_hud)
@@ -445,7 +447,15 @@ func _simulate(dt: float) -> void:
 
 	_stabilizer.update(dt, key_left, key_right, key_hold_left, key_hold_right)
 
-	var steer := pad_steer if absf(pad_steer) > 0.01 else _stabilizer.steer_output
+	var key_steer := (1.0 if key_right else 0.0) - (1.0 if key_left else 0.0)
+	var steer := pad_steer
+	if absf(steer) <= 0.01:
+		if _stabilizer.gyro_enabled and not _stabilizer.has_hardware_imu:
+			steer = _stabilizer.steer_output
+		elif absf(key_steer) > 0.01:
+			steer = key_steer
+		else:
+			steer = _stabilizer.steer_output
 	var brake := maxf(pad_brake, 1.0 if (_hud.touch_brake or key_brake) else 0.0)
 	var handbrake := _hud.touch_handbrake or key_handbrake or pad_handbrake
 	var throttle := pad_throttle
