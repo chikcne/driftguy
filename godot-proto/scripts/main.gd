@@ -44,22 +44,18 @@ const RIDER_THROW_SIDE := 4.0
 const HEARING_RANGE := 110.0
 const TRACK_SLIP_SPEED := 2.5
 const COMPOUND_BAND_SECONDS := 0.7
-const NITROUS_MAX_SECONDS := 7.2
-const NITROUS_STARTING_FILL := 1.0 / 3.0
-const NITROUS_HARM_FOR_FULL := 240.0
-const NITROUS_MIN_START := 0.02
-const NITROUS_REARM_FILL := 0.06
-const NITROUS_ATTACK := 0.05
-const NITROUS_RELEASE := 0.11
-const NITROUS_IGNITE_COOLDOWN := 0.5
-const NITROUS_TAP_FX_COOLDOWN := 0.12
-const NITROUS_FULL_CHIME_THRESHOLD := 0.88
+const NITROUS_MAX_TANKS := 6
+const NITROUS_STARTING_TANKS := 2
+const NITROUS_HARM_PER_TANK := 40.0
+const NITROUS_SECONDS := 1.2
+const NITROUS_ATTACK := 0.1
+const NITROUS_FADE := 0.25
 const NITROUS_PULLBACK := 6.0
 const NITROUS_PULLBACK_EASE_IN := 2.2
 const NITROUS_PULLBACK_EASE_OUT := 1.4
 const NITROUS_FOV_DEG := 2.0
-const NITROUS_FOV_KICK_DEG := 1.8
-const NITROUS_SHAKE := 0.28
+const NITROUS_FOV_KICK_DEG := 2.0
+const NITROUS_SHAKE := 0.32
 const NITROUS_LOOK_AHEAD := 0.12
 const NITROUS_FLAME_PUFFS_PER_SECOND := 36.0
 const LEVEL_UP_PICK_GUARD := 0.55
@@ -121,24 +117,20 @@ var _dust_acc := 0.0
 var _death_timer := 0.0
 var _smoke_output := 0.0
 var _next_crate := 65.0
-var _nitro_fill := NITROUS_STARTING_FILL
-var _nitro_active := false
-var _nitro_depleted := false
+var _nitro_tanks := NITROUS_STARTING_TANKS
+var _nitro_harm := 0.0
+var _nitro_burn := 0.0
 var _nitro_level := 0.0
 var _nitro_view := 0.0
 var _nitro_pull := 0.0
 var _nitro_kick := 0.0
-var _nitro_ignite_cd := 0.0
-var _nitro_tap_fx_cd := 0.0
-var _nitro_full_armed := true
-var _nitro_wait_release := false
 var _flame_acc := 0.0
 var _pick_guard := 0.0
 var _last_handbrake := false
 var _last_throttle := 0.0
 
 # Edge-triggered keyboard/gamepad state
-var _prev_nitro_held := false
+var _prev_nitro_key := false
 var _prev_confirm_pad := false
 var _prev_pause_pad := false
 var _prev_menu_dir := 0
@@ -361,18 +353,8 @@ func _toggle_mute() -> void:
 
 
 func _set_phase(new_phase: String) -> void:
-	var prev_phase := _phase
 	_phase = new_phase
 	_hud.show_phase(new_phase)
-	if new_phase == "playing" and prev_phase != "playing":
-		# Prevent menu confirm button (gamepad A) from accidentally burning nitro on the first playing frame
-		var pad_a := not Input.get_connected_joypads().is_empty() and Input.is_joy_button_pressed(0, JOY_BUTTON_A)
-		_nitro_wait_release = pad_a
-		_prev_nitro_held = pad_a
-	elif new_phase != "playing":
-		_nitro_active = false
-		if new_phase != "paused":
-			_nitro_level = 0.0
 	if new_phase == "gameover":
 		_hud.show_game_over_stats(_time, _kills, _level)
 
@@ -396,18 +378,13 @@ func _reset_run() -> void:
 	_shake = 0.0
 	_pending_blasts.clear()
 	_next_crate = randf_range(CRATE_INTERVAL_MIN, CRATE_INTERVAL_MAX)
-	_nitro_fill = NITROUS_STARTING_FILL
-	_nitro_active = false
-	_nitro_depleted = false
+	_nitro_tanks = NITROUS_STARTING_TANKS
+	_nitro_harm = 0.0
+	_nitro_burn = 0.0
 	_nitro_level = 0.0
 	_nitro_view = 0.0
 	_nitro_pull = 0.0
 	_nitro_kick = 0.0
-	_nitro_ignite_cd = 0.0
-	_nitro_tap_fx_cd = 0.0
-	_nitro_full_armed = true
-	_nitro_wait_release = false
-	_prev_nitro_held = false
 	_flame_acc = 0.0
 	_dust_acc = 0.0
 	_smoke_output = 0.0
@@ -428,7 +405,7 @@ func _reset_run() -> void:
 	_car_model.visible = true
 	_car_model.sync_attachments(false, false, false)
 	_hud.set_loadout(_levels)
-	_hud.set_nitro(_nitro_fill, false, _nitro_fill >= NITROUS_MIN_START)
+	_hud.set_nitro(_nitro_tanks, NITROUS_MAX_TANKS, 0.0, false)
 	_hud.set_frame(_hp, _stats.max_hp, 0.0, _level, 0.0, 0, 0.0, 0.0, Engine.get_frames_per_second())
 
 
@@ -489,15 +466,10 @@ func _simulate(dt: float) -> void:
 	if brake <= 0.0 and (_hud.auto_throttle or key_throttle):
 		throttle = maxf(throttle, 1.0)
 
-	var nitro_held := key_nitro or pad_nitro or _hud.touch_nitro
-	if _nitro_wait_release:
-		if not nitro_held:
-			_nitro_wait_release = false
-		else:
-			nitro_held = false
-	var nitro_just_pressed := nitro_held and not _prev_nitro_held
-	_prev_nitro_held = nitro_held
-	var boost := _update_nitrous(dt, nitro_held, nitro_just_pressed)
+	var nitro_pressed_now := key_nitro or pad_nitro
+	var nitro_trigger := (nitro_pressed_now and not _prev_nitro_key) or _hud.consume_touch_nitro()
+	_prev_nitro_key = nitro_pressed_now
+	var boost := _update_nitrous(dt, nitro_trigger)
 
 	_last_handbrake = handbrake
 	_last_throttle = throttle
@@ -554,8 +526,14 @@ func _simulate(dt: float) -> void:
 	)
 	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _car, _camera)
 	_hud.set_threats(_spawner.threats, _stabilizer.display_roll)
-	var nitro_ready := _nitro_fill >= (NITROUS_REARM_FILL if _nitro_depleted else NITROUS_MIN_START)
-	_hud.set_nitro(_nitro_fill, _nitro_active, nitro_ready)
+	var nitro_fill := 0.0
+	if _nitro_burn > 0.0:
+		nitro_fill = _nitro_burn / NITROUS_SECONDS
+	elif _nitro_tanks >= NITROUS_MAX_TANKS:
+		nitro_fill = 1.0
+	else:
+		nitro_fill = _nitro_harm / NITROUS_HARM_PER_TANK
+	_hud.set_nitro(_nitro_tanks, NITROUS_MAX_TANKS, nitro_fill, _nitro_burn > 0.0)
 
 	if _hp <= 0.0:
 		_die()
@@ -568,50 +546,18 @@ func _simulate(dt: float) -> void:
 		_set_phase("levelup")
 
 
-func _update_nitrous(dt: float, held: bool, just_pressed: bool) -> float:
-	_nitro_ignite_cd = maxf(0.0, _nitro_ignite_cd - dt)
-	_nitro_tap_fx_cd = maxf(0.0, _nitro_tap_fx_cd - dt)
-
-	if _nitro_depleted and _nitro_fill >= NITROUS_REARM_FILL:
-		_nitro_depleted = false
-
-	if held:
-		if _nitro_active:
-			if _nitro_fill <= 0.0:
-				_nitro_active = false
-				_nitro_depleted = true
-				_audio.nitro_empty()
+func _update_nitrous(dt: float, trigger: bool) -> float:
+	if trigger and _nitro_burn <= 0.0:
+		if _nitro_tanks > 0:
+			_ignite_nitrous()
 		else:
-			var min_needed := NITROUS_REARM_FILL if _nitro_depleted else NITROUS_MIN_START
-			if _nitro_fill >= min_needed:
-				_nitro_active = true
-				_nitro_depleted = false
-				_ignite_nitrous()
-			elif just_pressed:
-				_audio.nitro_empty()
-	else:
-		_nitro_active = false
-		if _nitro_depleted and _nitro_fill >= NITROUS_MIN_START:
-			_nitro_depleted = false
-
-	if _nitro_active:
-		_nitro_level = move_toward(_nitro_level, 1.0, dt / NITROUS_ATTACK)
-		var burn := (_nitro_level * dt) / NITROUS_MAX_SECONDS
-		_nitro_fill = maxf(0.0, _nitro_fill - burn)
-		if _nitro_fill <= 0.0:
-			_nitro_fill = 0.0
-			_nitro_active = false
-			_nitro_depleted = true
 			_audio.nitro_empty()
-	else:
-		_nitro_level = move_toward(_nitro_level, 0.0, dt / NITROUS_RELEASE)
-		if _nitro_level > 0.0 and _nitro_fill > 0.0:
-			var tail_burn := (_nitro_level * dt) / NITROUS_MAX_SECONDS
-			_nitro_fill = maxf(0.0, _nitro_fill - tail_burn)
-
-	if _nitro_fill < NITROUS_FULL_CHIME_THRESHOLD:
-		_nitro_full_armed = true
-
+	if _nitro_burn <= 0.0:
+		_nitro_level = 0.0
+		return 0.0
+	_nitro_burn = maxf(0.0, _nitro_burn - dt)
+	var burned := NITROUS_SECONDS - _nitro_burn
+	_nitro_level = minf(SimMath.saturate(burned / NITROUS_ATTACK), SimMath.saturate(_nitro_burn / NITROUS_FADE))
 	return _nitro_level
 
 
@@ -620,35 +566,30 @@ func _ignite_nitrous() -> void:
 	var fz := cos(_car.heading)
 	var ex := _car.x - fx * CarModel.EXHAUST_REAR
 	var ez := _car.z - fz * CarModel.EXHAUST_REAR
-	var ey := DesertTerrain.ground_height(ex, ez) + CarModel.EXHAUST_HEIGHT
-	if _nitro_ignite_cd <= 0.0:
-		_nitro_ignite_cd = NITROUS_IGNITE_COOLDOWN
-		_nitro_tap_fx_cd = NITROUS_TAP_FX_COOLDOWN
-		_nitro_kick = 0.8
-		_shake = maxf(_shake, 0.42)
-		_effects.spawn_ring(ex, ez, 6.5)
-		_gibs.sparks(ex, ey, ez, 10, 12.0, _car.vx - fx * 14.0, _car.vz - fz * 14.0)
-		_smoke.shockwave(ex, ez, 7.5, 6.0)
-		_audio.nitro_ignite()
-		_hud.kick_rush()
-		_haptic(95)
-	elif _nitro_tap_fx_cd <= 0.0:
-		_nitro_tap_fx_cd = NITROUS_TAP_FX_COOLDOWN
-		_nitro_kick = maxf(_nitro_kick, 0.35)
-		_shake = maxf(_shake, 0.18)
-		_gibs.sparks(ex, ey, ez, 4, 10.0, _car.vx - fx * 12.0, _car.vz - fz * 12.0)
-		_audio.nitro_tap()
-		_haptic(35)
+	_nitro_tanks -= 1
+	_nitro_burn = NITROUS_SECONDS
+	_nitro_kick = 1.0
+	_shake = maxf(_shake, 0.6)
+	_effects.spawn_ring(ex, ez, 8.0)
+	_gibs.sparks(ex, DesertTerrain.ground_height(ex, ez) + CarModel.EXHAUST_HEIGHT, ez, 14, 13.0, _car.vx - fx * 14.0, _car.vz - fz * 14.0)
+	_smoke.shockwave(ex, ez, 9.0, 7.0)
+	_audio.nitro_ignite()
+	_hud.kick_rush()
+	_haptic(220)
 
 
 func _gather_nitrous() -> void:
 	var harm := _enemies.take_harm_dealt()
-	if harm <= 0.0 or _nitro_fill >= 1.0:
+	if _nitro_tanks >= NITROUS_MAX_TANKS:
+		_nitro_harm = 0.0
 		return
-	_nitro_fill = minf(1.0, _nitro_fill + harm / NITROUS_HARM_FOR_FULL)
-	if _nitro_fill >= 1.0 and _nitro_full_armed:
-		_nitro_full_armed = false
+	_nitro_harm += harm
+	while _nitro_harm >= NITROUS_HARM_PER_TANK and _nitro_tanks < NITROUS_MAX_TANKS:
+		_nitro_harm -= NITROUS_HARM_PER_TANK
+		_nitro_tanks += 1
 		_audio.nitro_ready()
+	if _nitro_tanks >= NITROUS_MAX_TANKS:
+		_nitro_harm = 0.0
 
 
 func _emit_exhaust_flames(dt: float) -> void:
@@ -1003,7 +944,7 @@ func _die() -> void:
 	_car.vz = 0.0
 	_car.yaw_rate = 0.0
 	_shake = 1.0
-	_nitro_active = false
+	_nitro_burn = 0.0
 	_nitro_level = 0.0
 	_smoke_output = 0.0
 	_audio.defeat()
