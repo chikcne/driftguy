@@ -30,11 +30,11 @@ const AI_SETUP := 0
 const AI_CHARGE := 1
 const AI_RECOVER := 2
 
-# Biker flail states
-const FLAIL_IDLE := 0
-const FLAIL_WINDUP := 1
-const FLAIL_STRIKE := 2
-const FLAIL_FOLLOW := 3
+# Biker bat states
+const BAT_IDLE := 0
+const BAT_WINDUP := 1
+const BAT_SWING := 2
+const BAT_FOLLOW := 3
 
 # Player OBB & momentum collision tuning
 const PLAYER_HALF_LENGTH := 2.15
@@ -48,17 +48,18 @@ const FACE_VULN_SIDE := 1.5
 const FACE_VULN_REAR := 1.15
 const BIKE_LETHAL_CRASH_SPEED := 9.0
 
-# Biker swoop & flail tuning
-const FLAIL_WINDUP_SECONDS := 0.45
-const FLAIL_MIN_WINDUP := 0.24
-const FLAIL_STRIKE_SECONDS := 0.22
-const FLAIL_FOLLOW_SECONDS := 0.25
-const FLAIL_COOLDOWN_SECONDS := 1.8
-const FLAIL_TRIGGER_DIST := 8.5
-const FLAIL_REACH := 3.4
-const FLAIL_PASS_OFFSET := 2.65
-const FLAIL_DAMAGE := 6.5
-const FLAIL_SPIN_SPEED := 19.0
+# Biker swoop & fixed spiked-bat swing tuning
+const BAT_WINDUP_SECONDS := 0.34
+const BAT_SWING_SECONDS := 0.22
+const BAT_FOLLOW_SECONDS := 0.26
+const BAT_COOLDOWN_SECONDS := 1.65
+const BAT_TRIGGER_LATERAL := 3.6
+const BAT_TRIGGER_ALONG_MIN := -5.5
+const BAT_TRIGGER_ALONG_MAX := 1.2
+const BAT_PASS_OFFSET := 2.35
+const BAT_SWING_REACH := 1.75
+const BAT_HIT_RADIUS := 0.85
+const BAT_DAMAGE := 6.5
 const BLAST_KNOCK := 11.0
 const KNOCK_FADE := 5.0
 const BLIND_RISE := 4.0
@@ -208,12 +209,11 @@ class Enemy:
 	var ai_state: int = AI_SETUP
 	var ai_timer: float = 0.0
 	var ai_side: float = 1.0
-	var flail_state: int = FLAIL_IDLE
-	var flail_timer: float = 0.0
-	var flail_cooldown: float = 0.0
-	var flail_phase: float = 0.0
-	var flail_side: float = 1.0
-	var flail_hit_done: bool = false
+	var bat_state: int = BAT_IDLE
+	var bat_timer: float = 0.0
+	var bat_cooldown: float = 0.0
+	var bat_side: float = 1.0
+	var bat_hit_done: bool = false
 
 
 class Threat:
@@ -526,7 +526,7 @@ var wrecks: Array[Enemy] = []
 var _batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _riders: SimMath.InstanceBatch
 var _arms: SimMath.InstanceBatch
-var _flails: SimMath.InstanceBatch
+var _bats: SimMath.InstanceBatch
 var _sample := SmokeSystem.SmokeSample.new()
 var _contact := World.Contact.new()
 var _shove := LooseSystem.ShoveResult.new()
@@ -537,7 +537,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	# Positional args: kind, radius, hp, speed, accel, turn, grip, damage, scrap, half_length, half_width, mass, sway, wreck_seconds, wreck_spin,
 	#                  front_armor, side_armor, rear_armor, front_bonus, side_bonus, rear_bonus, ram_arc
 	specs = {
-		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, FLAIL_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
+		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, BAT_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
 		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 26.0, 12.0, 2.1, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6, 18.0, 0.0, 0.0, 10.0, 0.0, 0.0, 14.0),
 		"truck": EnemySpec.new("truck", 2.4, 110.0, 19.0, 7.0, 1.2, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4, 28.0, 6.0, 0.0, 16.0, 2.0, 0.0, 22.0),
 		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 35.0, 15.0, 1.9, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0, 20.0, 0.0, 0.0, 14.0, 0.0, 0.0, 16.0),
@@ -563,7 +563,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	var rider_models := Models.build_rider_models()
 	_riders = SimMath.InstanceBatch.new(self, rider_models["body"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiders")
 	_arms = SimMath.InstanceBatch.new(self, rider_models["arm"], enemy_mat, MAX_ENEMIES * 2, false, true, "EnemyRiderArms")
-	_flails = SimMath.InstanceBatch.new(self, rider_models["flail"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderFlails")
+	_bats = SimMath.InstanceBatch.new(self, rider_models["bat"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderBats")
 
 
 func clear() -> void:
@@ -603,7 +603,7 @@ func spawn(kind: String, x: float, z: float, hp_scale: float, facing: float) -> 
 	e.dust_timer = randf() * DUST_INTERVAL
 	e.flank = SimMath.rand_signed(1.0)
 	e.ai_side = -1.0 if randf() < 0.5 else 1.0
-	e.flail_side = e.ai_side
+	e.bat_side = -e.ai_side
 	e.sway_phase = randf() * TAU
 	e.sway_rate = randf_range(SWAY_RATE_MIN, SWAY_RATE_MAX)
 	active.append(e)
@@ -721,7 +721,7 @@ func update_enemies(
 		world.shove(enemy, spec.radius, spec.mass, _shove)
 		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, false)
 		if spec.kind == "bike":
-			_update_biker_flail(enemy, dt, car, stats, damage_scale, on_player_hit, on_bump)
+			_update_biker_bat(enemy, dt, car, stats, damage_scale, on_player_hit, on_bump)
 
 		enemy.dust_timer -= dt
 		if enemy.dust_timer <= 0.0:
@@ -887,7 +887,7 @@ func render_all(time_s: float) -> void:
 		batch.begin()
 	_riders.begin()
 	_arms.begin()
-	_flails.begin()
+	_bats.begin()
 	for enemy in active:
 		_draw_enemy(enemy, time_s)
 	for enemy in wrecks:
@@ -896,7 +896,7 @@ func render_all(time_s: float) -> void:
 		batch.commit()
 	_riders.commit()
 	_arms.commit()
-	_flails.commit()
+	_bats.commit()
 
 
 func _draw_enemy(enemy: Enemy, time_s: float) -> void:
@@ -921,9 +921,21 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 	var seat_yaw := sin(wiggle * 0.73) * RIDER_WIGGLE_YAW * blind
 	var seat_pitch := RIDER_RECOIL * blind
 	var seat_roll := sin(wiggle) * RIDER_WIGGLE_ROLL * blind
-	if enemy.flail_state == FLAIL_STRIKE and blind < 0.45:
-		seat_yaw += enemy.flail_side * 0.35
-		seat_roll += enemy.flail_side * 0.18
+
+	var weapon_side := enemy.bat_side
+	if blind < 0.45:
+		match enemy.bat_state:
+			BAT_WINDUP:
+				var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_WINDUP_SECONDS, 0.0, 1.0))
+				seat_yaw -= weapon_side * 0.28 * u
+			BAT_SWING:
+				var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
+				seat_yaw += weapon_side * lerpf(-0.28, 0.38, s)
+				seat_roll += weapon_side * sin(s * PI) * 0.2
+			BAT_FOLLOW:
+				var f := clampf(enemy.bat_timer / BAT_FOLLOW_SECONDS, 0.0, 1.0)
+				seat_yaw += weapon_side * 0.38 * f
+
 	var seat := _riders.push_under(
 		mount,
 		Models.RIDER_SEAT.x, Models.RIDER_SEAT.y, Models.RIDER_SEAT.z,
@@ -931,33 +943,48 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 		1.0, 1.0, 1.0,
 	)
 
-	var weapon_side := enemy.flail_side
 	for side: float in [-1.0, 1.0]:
 		var arm_yaw := side * lerpf(ARM_GRIP_YAW, ARM_COVER_YAW, blind)
 		var arm_pitch := lerpf(ARM_GRIP_PITCH, ARM_COVER_PITCH, blind) + (sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind
 		var arm_len := lerpf(ARM_GRIP_LENGTH, ARM_COVER_LENGTH, blind)
 		var is_weapon_arm := (side * weapon_side > 0.0) and blind < 0.45
 
-		if is_weapon_arm and enemy.flail_state != FLAIL_IDLE:
-			match enemy.flail_state:
-				FLAIL_WINDUP:
-					# Raise arm overhead while whirling the flail
-					arm_yaw = side * 0.35
-					arm_pitch = -1.35
+		var bat_yaw := side * 0.15
+		var bat_pitch := -0.95
+
+		if is_weapon_arm:
+			match enemy.bat_state:
+				BAT_IDLE:
+					# Casual ready carry off the grip, bat angled up-back over shoulder
+					arm_yaw = side * 0.55
+					arm_pitch = 0.25
+					arm_len = 1.0
+					bat_yaw = side * 0.15
+					bat_pitch = -0.95
+				BAT_WINDUP:
+					# Fixed wind-up: cock arm and bat back behind the shoulder
+					var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_WINDUP_SECONDS, 0.0, 1.0))
+					arm_yaw = side * lerpf(0.55, 2.25, u)
+					arm_pitch = lerpf(0.25, -0.30, u)
 					arm_len = 1.05
-				FLAIL_STRIKE:
-					# Whip arm outward toward the player car
-					var t := 1.0 - clampf(enemy.flail_timer / FLAIL_STRIKE_SECONDS, 0.0, 1.0)
-					var swing := sin(t * PI)
-					arm_yaw = side * lerpf(0.5, 1.55, swing)
-					arm_pitch = lerpf(-0.9, 0.2, swing)
+					bat_yaw = side * lerpf(0.15, 0.45, u)
+					bat_pitch = lerpf(-0.95, -0.20, u)
+				BAT_SWING:
+					# Fixed horizontal baseball-bat swing arc from rear-side to front-side
+					var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
+					arm_yaw = side * lerpf(2.25, 0.30, s)
+					arm_pitch = lerpf(-0.25, 0.12, s)
 					arm_len = 1.15
-				FLAIL_FOLLOW:
-					# Recover back toward handlebar grip
-					var t := clampf(enemy.flail_timer / FLAIL_FOLLOW_SECONDS, 0.0, 1.0)
-					arm_yaw = side * lerpf(ARM_GRIP_YAW, 0.9, t)
-					arm_pitch = lerpf(ARM_GRIP_PITCH, 0.1, t)
-					arm_len = lerpf(ARM_GRIP_LENGTH, 1.05, t)
+					bat_yaw = side * lerpf(0.45, -0.25, s)
+					bat_pitch = 0.05
+				BAT_FOLLOW:
+					# Smooth follow-through returning to ready carry
+					var f := clampf(enemy.bat_timer / BAT_FOLLOW_SECONDS, 0.0, 1.0)
+					arm_yaw = side * lerpf(0.55, 0.30, f)
+					arm_pitch = lerpf(0.25, 0.12, f)
+					arm_len = lerpf(1.0, 1.15, f)
+					bat_yaw = side * lerpf(0.15, -0.25, f)
+					bat_pitch = lerpf(-0.95, 0.05, f)
 
 		var arm_xform := _arms.push_under(
 			seat,
@@ -967,30 +994,11 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 		)
 
 		if side * weapon_side > 0.0:
-			var flail_yaw := 0.0
-			var flail_pitch := 0.0
-			var flail_roll := 0.0
-			var flail_scale := 1.0
-			if blind >= 0.45 or enemy.flail_state == FLAIL_IDLE:
-				# Stowed / trailing loosely at the rider's side
-				flail_yaw = side * 0.6
-				flail_pitch = 1.15
-				flail_scale = 0.85
-			elif enemy.flail_state == FLAIL_WINDUP:
-				# Spin rapidly overhead in a wide circle
-				flail_yaw = enemy.flail_phase * side
-				flail_pitch = 1.35
-				flail_roll = 0.0
-			elif enemy.flail_state == FLAIL_STRIKE:
-				# Extended straight out from the whipping arm
-				flail_yaw = 0.0
-				flail_pitch = 0.0
-				flail_scale = 1.15
-			else:
-				# Follow-through droop
-				flail_yaw = side * 0.3
-				flail_pitch = 0.7
-			_flails.push_under(arm_xform, 0.0, 0.0, 0.72, flail_yaw, flail_pitch, flail_roll, flail_scale, flail_scale, flail_scale)
+			var bat_scale := 0.85 if blind >= 0.45 else 1.05
+			if blind >= 0.45:
+				bat_yaw = side * 0.4
+				bat_pitch = 0.9
+			_bats.push_under(arm_xform, 0.0, 0.0, 0.72, bat_yaw, bat_pitch, 0.0, bat_scale, bat_scale, bat_scale)
 
 
 func _draw_wreck(enemy: Enemy, time_s: float) -> void:
@@ -1117,20 +1125,21 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -
 		AI_SETUP:
 			if absf(across) > 2.5:
 				enemy.ai_side = signf(across)
-			# Approach from behind/beside the player's flank to set up a drive-by swoop
-			target_x = pred_x + prx * (enemy.ai_side * 7.5) - pfx * 4.5
-			target_z = pred_z + prz * (enemy.ai_side * 7.5) - pfz * 4.5
-			if distance < 14.5 or enemy.ai_timer > 3.5:
+			# Stage behind and offset from the player's flank so the biker enters parallel for a bat pass
+			target_x = pred_x + prx * (enemy.ai_side * 6.5) - pfx * 6.5
+			target_z = pred_z + prz * (enemy.ai_side * 6.5) - pfz * 6.5
+			if (distance < 13.5 and along < 1.0) or enemy.ai_timer > 3.5:
 				enemy.ai_state = AI_CHARGE
 				enemy.ai_timer = 0.0
 
 		AI_CHARGE:
-			# Swoop parallel past the player's flank at flail reach without ramming into the body
-			var pass_dist := FLAIL_PASS_OFFSET + PLAYER_HALF_WIDTH * 0.3
-			target_x = pred_x + prx * (enemy.ai_side * pass_dist) + pfx * 6.5
-			target_z = pred_z + prz * (enemy.ai_side * pass_dist) + pfz * 6.5
-			speed_mult = 1.08
-			if along > 5.5 or enemy.ai_timer > 2.6:
+			# Line up tightly parallel to the player's flank so the fixed bat swing sweeps the car door
+			target_x = pred_x + prx * (enemy.ai_side * BAT_PASS_OFFSET) + pfx * 5.5
+			target_z = pred_z + prz * (enemy.ai_side * BAT_PASS_OFFSET) + pfz * 5.5
+			# Pace slightly faster than the player during the pass so the swing lands cleanly
+			var desired_spd := maxf(spec.speed * 0.85, car.speed + 6.0)
+			speed_mult = clampf(desired_spd / spec.speed, 0.75, 1.12)
+			if along > 5.0 or enemy.ai_timer > 2.8:
 				enemy.ai_state = AI_RECOVER
 				enemy.ai_timer = 0.0
 
@@ -1195,7 +1204,7 @@ func _dist_to_player_obb(px: float, pz: float, car: CarBody, stats: Upgrades.Sta
 	return sqrt(df * df + dr * dr)
 
 
-func _update_biker_flail(
+func _update_biker_bat(
 	enemy: Enemy,
 	dt: float,
 	car: CarBody,
@@ -1204,62 +1213,77 @@ func _update_biker_flail(
 	on_player_hit: Callable,
 	on_bump: Callable,
 ) -> void:
-	enemy.flail_cooldown = maxf(0.0, enemy.flail_cooldown - dt)
+	enemy.bat_cooldown = maxf(0.0, enemy.bat_cooldown - dt)
 	if enemy.blind >= 0.45:
-		enemy.flail_state = FLAIL_IDLE
-		enemy.flail_timer = 0.0
+		enemy.bat_state = BAT_IDLE
+		enemy.bat_timer = 0.0
 		return
 
 	var bfx := sin(enemy.heading)
 	var bfz := cos(enemy.heading)
 	var brx := bfz
 	var brz := -bfx
-	var to_car_x := car.x - enemy.x
-	var to_car_z := car.z - enemy.z
-	var side_dot := to_car_x * brx + to_car_z * brz
-	if absf(side_dot) > 0.25 and enemy.flail_state != FLAIL_STRIKE:
-		enemy.flail_side = signf(side_dot)
 
-	var surface_dist := _dist_to_player_obb(enemy.x, enemy.z, car, stats)
+	match enemy.bat_state:
+		BAT_IDLE:
+			# Keep bat carried on the side facing the player while lining up
+			var to_car_x := car.x - enemy.x
+			var to_car_z := car.z - enemy.z
+			var side_dot := to_car_x * brx + to_car_z * brz
+			if absf(side_dot) > 0.25:
+				enemy.bat_side = signf(side_dot)
+			if enemy.bat_cooldown > 0.0 or enemy.ai_state == AI_RECOVER:
+				return
+			# Start the fixed wind-up once positioned alongside/just behind the player's flank
+			var pfx := sin(car.heading)
+			var pfz := cos(car.heading)
+			var prx := pfz
+			var prz := -pfx
+			var rel_x := enemy.x - car.x
+			var rel_z := enemy.z - car.z
+			var along := rel_x * pfx + rel_z * pfz
+			var across := absf(rel_x * prx + rel_z * prz)
+			if across <= BAT_TRIGGER_LATERAL and along >= BAT_TRIGGER_ALONG_MIN and along <= BAT_TRIGGER_ALONG_MAX:
+				# Lock bat_side for the entire fixed windup + swing (no mid-swing seeking)
+				enemy.bat_side = signf(side_dot) if absf(side_dot) > 0.1 else -enemy.ai_side
+				enemy.bat_state = BAT_WINDUP
+				enemy.bat_timer = BAT_WINDUP_SECONDS
+				enemy.bat_hit_done = false
 
-	match enemy.flail_state:
-		FLAIL_IDLE:
-			if enemy.flail_cooldown <= 0.0 and surface_dist <= FLAIL_TRIGGER_DIST and enemy.ai_state != AI_RECOVER:
-				enemy.flail_state = FLAIL_WINDUP
-				enemy.flail_timer = FLAIL_WINDUP_SECONDS
-				enemy.flail_phase = 0.0
-				enemy.flail_hit_done = false
+		BAT_WINDUP:
+			enemy.bat_timer -= dt
+			if enemy.bat_timer <= 0.0:
+				enemy.bat_state = BAT_SWING
+				enemy.bat_timer = BAT_SWING_SECONDS
+				enemy.bat_hit_done = false
 
-		FLAIL_WINDUP:
-			enemy.flail_timer -= dt
-			enemy.flail_phase += FLAIL_SPIN_SPEED * dt
-			var elapsed := FLAIL_WINDUP_SECONDS - enemy.flail_timer
-			if enemy.flail_timer <= 0.0 or (elapsed >= FLAIL_MIN_WINDUP and surface_dist <= FLAIL_REACH):
-				enemy.flail_state = FLAIL_STRIKE
-				enemy.flail_timer = FLAIL_STRIKE_SECONDS
-				enemy.flail_hit_done = false
-			elif surface_dist > FLAIL_TRIGGER_DIST + 4.0:
-				enemy.flail_state = FLAIL_IDLE
-
-		FLAIL_STRIKE:
-			enemy.flail_timer -= dt
-			if not enemy.flail_hit_done and surface_dist <= FLAIL_REACH:
-				enemy.flail_hit_done = true
-				on_player_hit.call(enemy, enemy.spec.damage * damage_scale, 14.0)
-				if on_bump.is_valid():
-					on_bump.call(enemy, 0.45)
-			if enemy.flail_timer <= 0.0:
-				enemy.flail_state = FLAIL_FOLLOW
-				enemy.flail_timer = FLAIL_FOLLOW_SECONDS
-				enemy.flail_cooldown = FLAIL_COOLDOWN_SECONDS
-				# Peel away after the drive-by strike
+		BAT_SWING:
+			enemy.bat_timer -= dt
+			if not enemy.bat_hit_done:
+				# Fixed swing arc in bike-local frame: sweeps from rear-side (2.25 rad) to front-side (0.30 rad)
+				var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
+				var arc_angle := enemy.bat_side * lerpf(2.25, 0.30, s)
+				var local_side := sin(arc_angle) * BAT_SWING_REACH
+				var local_fwd := cos(arc_angle) * BAT_SWING_REACH
+				var tip_x := enemy.x + brx * local_side + bfx * local_fwd
+				var tip_z := enemy.z + brz * local_side + bfz * local_fwd
+				if _dist_to_player_obb(tip_x, tip_z, car, stats) <= BAT_HIT_RADIUS:
+					enemy.bat_hit_done = true
+					on_player_hit.call(enemy, enemy.spec.damage * damage_scale, 14.0)
+					if on_bump.is_valid():
+						on_bump.call(enemy, 0.45)
+			if enemy.bat_timer <= 0.0:
+				enemy.bat_state = BAT_FOLLOW
+				enemy.bat_timer = BAT_FOLLOW_SECONDS
+				enemy.bat_cooldown = BAT_COOLDOWN_SECONDS
+				# Peel away after completing the fixed drive-by swing
 				enemy.ai_state = AI_RECOVER
 				enemy.ai_timer = 0.0
 
-		FLAIL_FOLLOW:
-			enemy.flail_timer -= dt
-			if enemy.flail_timer <= 0.0:
-				enemy.flail_state = FLAIL_IDLE
+		BAT_FOLLOW:
+			enemy.bat_timer -= dt
+			if enemy.bat_timer <= 0.0:
+				enemy.bat_state = BAT_IDLE
 
 
 static func _face_vuln(face: int) -> float:
