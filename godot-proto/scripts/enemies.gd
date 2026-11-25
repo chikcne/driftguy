@@ -576,11 +576,11 @@ func setup(base_material: StandardMaterial3D) -> void:
 	# Positional args: kind, radius, hp, speed, accel, turn, grip, damage, scrap, half_length, half_width, mass, sway, wreck_seconds, wreck_spin,
 	#                  front_armor, side_armor, rear_armor, front_bonus, side_bonus, rear_bonus, ram_arc
 	specs = {
-		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, PIPE_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
-		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 26.0, 12.0, 2.1, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6, 18.0, 0.0, 0.0, 10.0, 0.0, 0.0, 14.0),
-		"truck": EnemySpec.new("truck", 2.4, 110.0, 19.0, 7.0, 1.2, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4, 28.0, 6.0, 0.0, 16.0, 2.0, 0.0, 22.0),
-		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 35.0, 15.0, 1.9, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0, 20.0, 0.0, 0.0, 14.0, 0.0, 0.0, 16.0),
-		"rig": EnemySpec.new("rig", 3.6, 900.0, 22.0, 6.0, 0.85, 1.8, 30.0, 45.0, 5.4, 1.5, 4.0, 0.25, 2.0, 1.1, 40.0, 10.0, 0.0, 22.0, 4.0, 0.0, 30.0),
+		"bike": EnemySpec.new("bike", 0.95, 8.0, 24.0, 16.0, 2.8, 3.6, PIPE_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
+		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 18.2, 12.0, 2.1, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6, 18.0, 0.0, 0.0, 10.0, 0.0, 0.0, 14.0),
+		"truck": EnemySpec.new("truck", 2.4, 110.0, 13.3, 7.0, 1.2, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4, 28.0, 6.0, 0.0, 16.0, 2.0, 0.0, 22.0),
+		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 24.5, 15.0, 1.9, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0, 20.0, 0.0, 0.0, 14.0, 0.0, 0.0, 16.0),
+		"rig": EnemySpec.new("rig", 3.6, 900.0, 15.4, 6.0, 0.85, 1.8, 30.0, 45.0, 5.4, 1.5, 4.0, 0.25, 2.0, 1.1, 40.0, 10.0, 0.0, 22.0, 4.0, 0.0, 30.0),
 	}
 
 	# Duplicate base material: write stencil=1 on visible enemy fragments so the

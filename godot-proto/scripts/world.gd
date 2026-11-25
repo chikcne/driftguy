@@ -8,7 +8,7 @@ extends Node3D
 const VIEW_RADIUS_CHUNKS := 2
 const COLLIDER_CELL := 16.0
 const SPAWN_CLEARING := 28.0
-const OUTPOST_CHANCE := 0.16
+const OUTPOST_CHANCE := 0.08
 const PLACEMENT_ATTEMPTS := 5
 const ROOTED_ID_STRIDE := 256
 const LOOSE_CAPACITY := 64
@@ -558,7 +558,7 @@ func _create_chunk(cx: int, cz: int) -> ChunkData:
 	if rng.next() < OUTPOST_CHANCE:
 		_place_outpost(chunk, origin_x + lerpf(18.0, 46.0, rng.next()), origin_z + lerpf(18.0, 46.0, rng.next()), rng)
 
-	var scatter_count := 4 + int(floor(rng.next() * 5.0))
+	var scatter_count := 2 + int(floor(rng.next() * 3.0))
 	for _i in scatter_count:
 		var scatter_name := _pick_scatter(rng)
 		for _attempt in PLACEMENT_ATTEMPTS:
