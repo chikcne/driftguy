@@ -35,7 +35,22 @@ static func build_rider_models() -> Dictionary:
 		.box(Vector3(0.16, 0.16, 0.16), Vector3(0.0, 0.0, 0.72), Palette.RAIDER_BONE) \
 		.build()
 
-	return { "body": body, "arm": arm }
+	# Spiked chain flail held in the biker's hand (origin at grip, extends along +Z)
+	kit \
+		.cylinder(0.08, 0.08, 0.36, 6, Vector3(0.0, 0.0, 0.16), Palette.RUST_DARK, Vector3(HALF_PI, 0.0, 0.0)) \
+		.box(Vector3(0.07, 0.07, 0.18), Vector3(0.0, 0.0, 0.44), Palette.METAL) \
+		.box(Vector3(0.07, 0.07, 0.18), Vector3(0.0, 0.0, 0.64), Palette.METAL_DARK) \
+		.box(Vector3(0.07, 0.07, 0.18), Vector3(0.0, 0.0, 0.84), Palette.METAL) \
+		.box(Vector3(0.07, 0.07, 0.18), Vector3(0.0, 0.0, 1.04), Palette.METAL_DARK) \
+		.blob(0.2, Vector3(0.0, 0.0, 1.26), Palette.METAL_DARK, Vector3.ONE, 0.08, 7, 1) \
+		.cylinder(0.0, 0.1, 0.22, 5, Vector3(0.0, 0.0, 1.48), Palette.RAIDER_BONE, Vector3(HALF_PI, 0.0, 0.0)) \
+		.cylinder(0.0, 0.1, 0.22, 5, Vector3(0.22, 0.0, 1.26), Palette.RAIDER_BONE, Vector3(0.0, 0.0, -HALF_PI)) \
+		.cylinder(0.0, 0.1, 0.22, 5, Vector3(-0.22, 0.0, 1.26), Palette.RAIDER_BONE, Vector3(0.0, 0.0, HALF_PI)) \
+		.cylinder(0.0, 0.1, 0.22, 5, Vector3(0.0, 0.22, 1.26), Palette.RAIDER_BONE, Vector3.ZERO) \
+		.cylinder(0.0, 0.1, 0.22, 5, Vector3(0.0, -0.22, 1.26), Palette.RAIDER_BONE, Vector3(PI, 0.0, 0.0))
+	var flail := kit.build()
+
+	return { "body": body, "arm": arm, "flail": flail }
 
 
 static func build_enemy_models() -> Dictionary:

@@ -11,6 +11,8 @@ const TOXIC_DPS := [0.0, 5.0, 9.0, 14.0]
 const GUN_BARRELS := [0, 1, 2, 2, 3, 4]
 const GUN_FIRE_RATE := [0.0, 6.0, 6.0, 8.0, 8.0, 10.0]
 const GUN_DAMAGE := [0.0, 7.0, 7.0, 10.0, 10.0, 13.0]
+const RAM_FRONT_ARMOR := [0.0, 16.0, 22.0, 28.0, 34.0]
+const RAM_FRONT_BONUS := [0.0, 12.0, 20.0, 28.0, 38.0]
 const PATCH_HEAL := 35.0
 const ARMOR_HP := 25.0
 
@@ -72,7 +74,10 @@ class UpgradeDef:
 				if next_level == 1:
 					return "Roof machine gun sweeping in a spiral"
 				return "%d barrels, %d sweeps per second, %d damage" % [GUN_BARRELS[next_level], int(GUN_FIRE_RATE[next_level]), int(GUN_DAMAGE[next_level])]
-			"ram": return "Ramming hurts raiders, 12% less collision damage taken"
+			"ram":
+				if next_level == 1:
+					return "Armored front plow: %d front armor, +%d ram damage" % [int(RAM_FRONT_ARMOR[next_level]), int(RAM_FRONT_BONUS[next_level])]
+				return "Heavier plow: %d front armor, +%d ram damage" % [int(RAM_FRONT_ARMOR[next_level]), int(RAM_FRONT_BONUS[next_level])]
 			"patch": return "Repair %d hull" % int(PATCH_HEAL)
 		return ""
 
@@ -103,8 +108,8 @@ class Stats:
 	var gun_barrels: int = 0
 	var gun_fire_rate: float = 0.0
 	var gun_damage: float = 0.0
-	var ram_damage: float = 0.0
-	var ram_guard: float = 0.0
+	var ram_front_armor: float = 0.0
+	var ram_front_bonus: float = 0.0
 
 
 static var _all_cache: Array[UpgradeDef] = []
@@ -186,8 +191,8 @@ static func derive_stats(levels: Dictionary) -> Stats:
 	s.gun_barrels = GUN_BARRELS[gun]
 	s.gun_fire_rate = GUN_FIRE_RATE[gun]
 	s.gun_damage = GUN_DAMAGE[gun]
-	s.ram_damage = 22.0 * float(ram)
-	s.ram_guard = 0.12 * float(ram)
+	s.ram_front_armor = RAM_FRONT_ARMOR[ram]
+	s.ram_front_bonus = RAM_FRONT_BONUS[ram]
 	return s
 
 

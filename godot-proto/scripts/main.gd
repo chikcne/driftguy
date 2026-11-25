@@ -734,9 +734,9 @@ func _on_threat(threat: EnemySystem.Threat) -> void:
 
 
 func _hurt_player(enemy: EnemySystem.Enemy, damage: float, closing_speed: float) -> void:
-	_shake = maxf(_shake, 0.35 + SimMath.saturate(closing_speed / 30.0) * 0.4)
-	_audio.thud(0.5 + enemy.spec.mass * 0.2)
-	if _invulnerable > 0.0:
+	_shake = maxf(_shake, 0.22 + SimMath.saturate(closing_speed / 30.0) * 0.45)
+	_audio.thud(0.35 + SimMath.saturate(closing_speed / 30.0) * 0.35 + enemy.spec.mass * 0.15)
+	if damage <= 0.0 or _invulnerable > 0.0:
 		return
 	_invulnerable = HIT_INVULNERABILITY
 	_hp -= damage

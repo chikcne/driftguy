@@ -13,17 +13,52 @@ const KIND_SHARE_THRESHOLD := 0.25
 const ASH_LINGER := 0.5
 const EMBER_LINGER := 1.2
 const TOXIC_LINGER := 3.0
-const HIT_COOLDOWN := 1.0
+const HIT_COOLDOWN := 0.45
 const BLINDED_SPEED_FACTOR := 0.72
 const BLINDED_LINGER := 0.25
-const RAM_COOLDOWN := 0.4
-const RAM_MIN_SPEED := 8.0
-const CAR_CIRCLE_OFFSET := 1.05
-const CAR_CIRCLE_RADIUS := 1.15
 const DUST_INTERVAL := 0.3
 const DUST_VISIBLE_RANGE := 75.0
-const FLANK_DISTANCE := 16.0
 const STIR_RATE := 1.6
+
+# Directional collision faces
+const FACE_FRONT := 0
+const FACE_SIDE := 1
+const FACE_REAR := 2
+
+# 3-state maneuver AI
+const AI_SETUP := 0
+const AI_CHARGE := 1
+const AI_RECOVER := 2
+
+# Biker flail states
+const FLAIL_IDLE := 0
+const FLAIL_WINDUP := 1
+const FLAIL_STRIKE := 2
+const FLAIL_FOLLOW := 3
+
+# Player OBB & momentum collision tuning
+const PLAYER_HALF_LENGTH := 2.15
+const PLAYER_PLOW_EXTRA_LENGTH := 0.22
+const PLAYER_HALF_WIDTH := 0.92
+const PLAYER_MASS := 1.0
+const COLLISION_MIN_SPEED := 5.0
+const COLLISION_DAMAGE_PER_SPEED := 0.40
+const FACE_VULN_FRONT := 1.0
+const FACE_VULN_SIDE := 1.5
+const FACE_VULN_REAR := 1.15
+const BIKE_LETHAL_CRASH_SPEED := 9.0
+
+# Biker swoop & flail tuning
+const FLAIL_WINDUP_SECONDS := 0.45
+const FLAIL_MIN_WINDUP := 0.24
+const FLAIL_STRIKE_SECONDS := 0.22
+const FLAIL_FOLLOW_SECONDS := 0.25
+const FLAIL_COOLDOWN_SECONDS := 1.8
+const FLAIL_TRIGGER_DIST := 8.5
+const FLAIL_REACH := 3.4
+const FLAIL_PASS_OFFSET := 2.65
+const FLAIL_DAMAGE := 6.5
+const FLAIL_SPIN_SPEED := 19.0
 const BLAST_KNOCK := 11.0
 const KNOCK_FADE := 5.0
 const BLIND_RISE := 4.0
@@ -87,11 +122,21 @@ class EnemySpec:
 	var sway: float
 	var wreck_seconds: float
 	var wreck_spin: float
+	var front_armor: float
+	var side_armor: float
+	var rear_armor: float
+	var front_bonus: float
+	var side_bonus: float
+	var rear_bonus: float
+	var ram_arc: float
 
 	func _init(
 		p_kind: String, p_radius: float, p_hp: float, p_speed: float, p_accel: float,
 		p_turn: float, p_grip: float, p_damage: float, p_scrap: float, p_hl: float,
 		p_hw: float, p_mass: float, p_sway: float, p_wsec: float, p_wspin: float,
+		p_front_armor: float = 0.0, p_side_armor: float = 0.0, p_rear_armor: float = 0.0,
+		p_front_bonus: float = 0.0, p_side_bonus: float = 0.0, p_rear_bonus: float = 0.0,
+		p_ram_arc: float = 14.0,
 	) -> void:
 		kind = p_kind
 		radius = p_radius
@@ -108,6 +153,25 @@ class EnemySpec:
 		sway = p_sway
 		wreck_seconds = p_wsec
 		wreck_spin = p_wspin
+		front_armor = p_front_armor
+		side_armor = p_side_armor
+		rear_armor = p_rear_armor
+		front_bonus = p_front_bonus
+		side_bonus = p_side_bonus
+		rear_bonus = p_rear_bonus
+		ram_arc = p_ram_arc
+
+	func armor_for_face(face: int) -> float:
+		match face:
+			FACE_FRONT: return front_armor
+			FACE_SIDE: return side_armor
+			_: return rear_armor
+
+	func bonus_for_face(face: int) -> float:
+		match face:
+			FACE_FRONT: return front_bonus
+			FACE_SIDE: return side_bonus
+			_: return rear_bonus
 
 
 class Enemy:
@@ -121,7 +185,6 @@ class Enemy:
 	var hp: float = 10.0
 	var max_hp: float = 10.0
 	var hit_cooldown: float = 0.0
-	var ram_cooldown: float = 0.0
 	var blind_timer: float = 0.0
 	var slow_timer: float = 0.0
 	var ember_timer: float = 0.0
@@ -142,6 +205,15 @@ class Enemy:
 	var wreck_side: float = 1.0
 	var tilt: float = 0.0
 	var fx_timer: float = 0.0
+	var ai_state: int = AI_SETUP
+	var ai_timer: float = 0.0
+	var ai_side: float = 1.0
+	var flail_state: int = FLAIL_IDLE
+	var flail_timer: float = 0.0
+	var flail_cooldown: float = 0.0
+	var flail_phase: float = 0.0
+	var flail_side: float = 1.0
+	var flail_hit_done: bool = false
 
 
 class Threat:
@@ -454,6 +526,7 @@ var wrecks: Array[Enemy] = []
 var _batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _riders: SimMath.InstanceBatch
 var _arms: SimMath.InstanceBatch
+var _flails: SimMath.InstanceBatch
 var _sample := SmokeSystem.SmokeSample.new()
 var _contact := World.Contact.new()
 var _shove := LooseSystem.ShoveResult.new()
@@ -461,12 +534,14 @@ var _harm_dealt := 0.0
 
 
 func setup(base_material: StandardMaterial3D) -> void:
+	# Positional args: kind, radius, hp, speed, accel, turn, grip, damage, scrap, half_length, half_width, mass, sway, wreck_seconds, wreck_spin,
+	#                  front_armor, side_armor, rear_armor, front_bonus, side_bonus, rear_bonus, ram_arc
 	specs = {
-		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.6, 3.6, 3.0, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5),
-		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 26.0, 12.0, 1.9, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6),
-		"truck": EnemySpec.new("truck", 2.4, 110.0, 19.0, 7.0, 1.1, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4),
-		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 35.0, 15.0, 1.7, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0),
-		"rig": EnemySpec.new("rig", 3.6, 900.0, 22.0, 6.0, 0.8, 1.8, 30.0, 45.0, 5.4, 1.5, 4.0, 0.25, 2.0, 1.1),
+		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, FLAIL_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
+		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 26.0, 12.0, 2.1, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6, 18.0, 0.0, 0.0, 10.0, 0.0, 0.0, 14.0),
+		"truck": EnemySpec.new("truck", 2.4, 110.0, 19.0, 7.0, 1.2, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4, 28.0, 6.0, 0.0, 16.0, 2.0, 0.0, 22.0),
+		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 35.0, 15.0, 1.9, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0, 20.0, 0.0, 0.0, 14.0, 0.0, 0.0, 16.0),
+		"rig": EnemySpec.new("rig", 3.6, 900.0, 22.0, 6.0, 0.85, 1.8, 30.0, 45.0, 5.4, 1.5, 4.0, 0.25, 2.0, 1.1, 40.0, 10.0, 0.0, 22.0, 4.0, 0.0, 30.0),
 	}
 
 	# Duplicate base material: write stencil=1 on visible enemy fragments so the
@@ -488,6 +563,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	var rider_models := Models.build_rider_models()
 	_riders = SimMath.InstanceBatch.new(self, rider_models["body"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiders")
 	_arms = SimMath.InstanceBatch.new(self, rider_models["arm"], enemy_mat, MAX_ENEMIES * 2, false, true, "EnemyRiderArms")
+	_flails = SimMath.InstanceBatch.new(self, rider_models["flail"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderFlails")
 
 
 func clear() -> void:
@@ -526,6 +602,8 @@ func spawn(kind: String, x: float, z: float, hp_scale: float, facing: float) -> 
 	e.max_hp = spec.hp * hp_scale
 	e.dust_timer = randf() * DUST_INTERVAL
 	e.flank = SimMath.rand_signed(1.0)
+	e.ai_side = -1.0 if randf() < 0.5 else 1.0
+	e.flail_side = e.ai_side
 	e.sway_phase = randf() * TAU
 	e.sway_rate = randf_range(SWAY_RATE_MIN, SWAY_RATE_MAX)
 	active.append(e)
@@ -600,7 +678,6 @@ func update_enemies(
 		enemy.knock_x *= knock_fade
 		enemy.knock_z *= knock_fade
 		enemy.hit_cooldown -= dt
-		enemy.ram_cooldown -= dt
 		enemy.blind_timer -= dt
 		enemy.slow_timer -= dt
 		enemy.ember_timer -= dt
@@ -642,7 +719,9 @@ func update_enemies(
 				enemy.vx -= into * _contact.nx * 1.2
 				enemy.vz -= into * _contact.nz * 1.2
 		world.shove(enemy, spec.radius, spec.mass, _shove)
-		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, false)
+		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, false)
+		if spec.kind == "bike":
+			_update_biker_flail(enemy, dt, car, stats, damage_scale, on_player_hit, on_bump)
 
 		enemy.dust_timer -= dt
 		if enemy.dust_timer <= 0.0:
@@ -723,7 +802,7 @@ func _update_wrecks(
 				if into < -WRECK_CRASH_SPEED:
 					enemy.wreck = 0.0
 		world.shove(enemy, spec.radius, spec.mass, _shove)
-		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, true)
+		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, true)
 		_bump_into(enemy, on_bump)
 
 		enemy.fx_timer -= dt
@@ -808,6 +887,7 @@ func render_all(time_s: float) -> void:
 		batch.begin()
 	_riders.begin()
 	_arms.begin()
+	_flails.begin()
 	for enemy in active:
 		_draw_enemy(enemy, time_s)
 	for enemy in wrecks:
@@ -816,6 +896,7 @@ func render_all(time_s: float) -> void:
 		batch.commit()
 	_riders.commit()
 	_arms.commit()
+	_flails.commit()
 
 
 func _draw_enemy(enemy: Enemy, time_s: float) -> void:
@@ -837,23 +918,79 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 	var blind := SimMath.smoothstep_f(0.0, 1.0, enemy.blind)
 	var wiggle := time_s * 11.0 + enemy.flank * 9.0
 	var mount := SimMath.sim_transform(enemy.x, slope.x, enemy.z, yaw, slope.y, roll, 1.0, 1.0, 1.0)
+	var seat_yaw := sin(wiggle * 0.73) * RIDER_WIGGLE_YAW * blind
+	var seat_pitch := RIDER_RECOIL * blind
+	var seat_roll := sin(wiggle) * RIDER_WIGGLE_ROLL * blind
+	if enemy.flail_state == FLAIL_STRIKE and blind < 0.45:
+		seat_yaw += enemy.flail_side * 0.35
+		seat_roll += enemy.flail_side * 0.18
 	var seat := _riders.push_under(
 		mount,
 		Models.RIDER_SEAT.x, Models.RIDER_SEAT.y, Models.RIDER_SEAT.z,
-		sin(wiggle * 0.73) * RIDER_WIGGLE_YAW * blind,
-		RIDER_RECOIL * blind,
-		sin(wiggle) * RIDER_WIGGLE_ROLL * blind,
+		seat_yaw, seat_pitch, seat_roll,
 		1.0, 1.0, 1.0,
 	)
-	for side in [-1.0, 1.0]:
-		_arms.push_under(
+
+	var weapon_side := enemy.flail_side
+	for side: float in [-1.0, 1.0]:
+		var arm_yaw := side * lerpf(ARM_GRIP_YAW, ARM_COVER_YAW, blind)
+		var arm_pitch := lerpf(ARM_GRIP_PITCH, ARM_COVER_PITCH, blind) + (sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind
+		var arm_len := lerpf(ARM_GRIP_LENGTH, ARM_COVER_LENGTH, blind)
+		var is_weapon_arm := (side * weapon_side > 0.0) and blind < 0.45
+
+		if is_weapon_arm and enemy.flail_state != FLAIL_IDLE:
+			match enemy.flail_state:
+				FLAIL_WINDUP:
+					# Raise arm overhead while whirling the flail
+					arm_yaw = side * 0.35
+					arm_pitch = -1.35
+					arm_len = 1.05
+				FLAIL_STRIKE:
+					# Whip arm outward toward the player car
+					var t := 1.0 - clampf(enemy.flail_timer / FLAIL_STRIKE_SECONDS, 0.0, 1.0)
+					var swing := sin(t * PI)
+					arm_yaw = side * lerpf(0.5, 1.55, swing)
+					arm_pitch = lerpf(-0.9, 0.2, swing)
+					arm_len = 1.15
+				FLAIL_FOLLOW:
+					# Recover back toward handlebar grip
+					var t := clampf(enemy.flail_timer / FLAIL_FOLLOW_SECONDS, 0.0, 1.0)
+					arm_yaw = side * lerpf(ARM_GRIP_YAW, 0.9, t)
+					arm_pitch = lerpf(ARM_GRIP_PITCH, 0.1, t)
+					arm_len = lerpf(ARM_GRIP_LENGTH, 1.05, t)
+
+		var arm_xform := _arms.push_under(
 			seat,
 			side * Models.RIDER_SHOULDER.x, Models.RIDER_SHOULDER.y, Models.RIDER_SHOULDER.z,
-			side * lerpf(ARM_GRIP_YAW, ARM_COVER_YAW, blind),
-			lerpf(ARM_GRIP_PITCH, ARM_COVER_PITCH, blind) + (sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind,
-			0.0,
-			1.0, 1.0, lerpf(ARM_GRIP_LENGTH, ARM_COVER_LENGTH, blind),
+			arm_yaw, arm_pitch, 0.0,
+			1.0, 1.0, arm_len,
 		)
+
+		if side * weapon_side > 0.0:
+			var flail_yaw := 0.0
+			var flail_pitch := 0.0
+			var flail_roll := 0.0
+			var flail_scale := 1.0
+			if blind >= 0.45 or enemy.flail_state == FLAIL_IDLE:
+				# Stowed / trailing loosely at the rider's side
+				flail_yaw = side * 0.6
+				flail_pitch = 1.15
+				flail_scale = 0.85
+			elif enemy.flail_state == FLAIL_WINDUP:
+				# Spin rapidly overhead in a wide circle
+				flail_yaw = enemy.flail_phase * side
+				flail_pitch = 1.35
+				flail_roll = 0.0
+			elif enemy.flail_state == FLAIL_STRIKE:
+				# Extended straight out from the whipping arm
+				flail_yaw = 0.0
+				flail_pitch = 0.0
+				flail_scale = 1.15
+			else:
+				# Follow-through droop
+				flail_yaw = side * 0.3
+				flail_pitch = 0.7
+			_flails.push_under(arm_xform, 0.0, 0.0, 0.72, flail_yaw, flail_pitch, flail_roll, flail_scale, flail_scale, flail_scale)
 
 
 func _draw_wreck(enemy: Enemy, time_s: float) -> void:
@@ -868,18 +1005,156 @@ func _draw_wreck(enemy: Enemy, time_s: float) -> void:
 
 
 func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
-	var spec := enemy.spec
-	var to_car_x := car.x - enemy.x
-	var to_car_z := car.z - enemy.z
-	var distance := sqrt(to_car_x * to_car_x + to_car_z * to_car_z) + 0.001
-	var lead := minf(0.9, distance / 40.0)
-	var target_x := car.x + car.vx * lead
-	var target_z := car.z + car.vz * lead
-	if distance > FLANK_DISTANCE:
-		var sideways := enemy.flank * minf(distance * 0.35, 22.0)
-		target_x += (to_car_z / distance) * sideways
-		target_z -= (to_car_x / distance) * sideways
+	if enemy.spec.kind == "bike":
+		_steer_bike(enemy, dt, car, stats)
+	else:
+		_steer_car(enemy, dt, car, stats)
 
+
+func _steer_car(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
+	var spec := enemy.spec
+	enemy.ai_timer += dt
+
+	var pfx := sin(car.heading)
+	var pfz := cos(car.heading)
+	var prx := pfz
+	var prz := -pfx
+
+	var rel_x := enemy.x - car.x
+	var rel_z := enemy.z - car.z
+	var distance := sqrt(rel_x * rel_x + rel_z * rel_z) + 0.001
+	var along := rel_x * pfx + rel_z * pfz
+	var across := rel_x * prx + rel_z * prz
+	var arc := spec.ram_arc
+
+	var lead := clampf(distance / maxf(14.0, spec.speed), 0.08, 0.75)
+	var pred_x := car.x + car.vx * lead
+	var pred_z := car.z + car.vz * lead
+
+	var target_x := pred_x
+	var target_z := pred_z
+	var speed_mult := 1.0
+
+	match enemy.ai_state:
+		AI_SETUP:
+			# Choose the flank we are already closer to if clearly to one side
+			if absf(across) > 3.5:
+				enemy.ai_side = signf(across)
+			# Stage off the player's chosen flank slightly ahead so we can turn in perpendicular to T-bone
+			var stage_out := arc * 0.95
+			var stage_ahead := arc * 0.45
+			target_x = pred_x + prx * (enemy.ai_side * stage_out) + pfx * stage_ahead
+			target_z = pred_z + prz * (enemy.ai_side * stage_out) + pfz * stage_ahead
+
+			var in_flank_band := absf(across) > 5.0 and absf(along) < arc * 1.15 and distance < arc * 1.65
+			var to_player_x := -rel_x / distance
+			var to_player_z := -rel_z / distance
+			var fx := sin(enemy.heading)
+			var fz := cos(enemy.heading)
+			var facing_player := fx * to_player_x + fz * to_player_z
+			if (in_flank_band and facing_player > 0.25) or (distance < arc * 1.1 and enemy.ai_timer > 1.2) or enemy.ai_timer > 4.5:
+				enemy.ai_state = AI_CHARGE
+				enemy.ai_timer = 0.0
+
+		AI_CHARGE:
+			# Full-speed frontal ram aimed at the player's center/flank
+			var charge_lead := clampf(distance / maxf(16.0, spec.speed * 1.1), 0.04, 0.55)
+			target_x = car.x + car.vx * charge_lead
+			target_z = car.z + car.vz * charge_lead
+			speed_mult = 1.12
+
+			var fx := sin(enemy.heading)
+			var fz := cos(enemy.heading)
+			var passed := ((-rel_x) * fx + (-rel_z) * fz) < -2.5 and distance < arc
+			if passed or enemy.ai_timer > 3.2:
+				enemy.ai_state = AI_RECOVER
+				enemy.ai_timer = 0.0
+
+		AI_RECOVER:
+			# Swing wide away from the player to build speed and line up a fresh flank run
+			var recover_time := 1.1 + (arc - 12.0) * 0.045
+			var out_x := rel_x / distance
+			var out_z := rel_z / distance
+			var fx := sin(enemy.heading)
+			var fz := cos(enemy.heading)
+			target_x = enemy.x + (out_x * 0.75 + fx * 0.65) * arc
+			target_z = enemy.z + (out_z * 0.75 + fz * 0.65) * arc
+			if enemy.ai_timer >= recover_time or distance > arc * 1.45:
+				enemy.ai_state = AI_SETUP
+				enemy.ai_timer = 0.0
+				if absf(across) > 2.5:
+					enemy.ai_side = signf(across)
+				else:
+					enemy.ai_side = -enemy.ai_side
+
+	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
+
+
+func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> void:
+	var spec := enemy.spec
+	enemy.ai_timer += dt
+
+	var pfx := sin(car.heading)
+	var pfz := cos(car.heading)
+	var prx := pfz
+	var prz := -pfx
+
+	var rel_x := enemy.x - car.x
+	var rel_z := enemy.z - car.z
+	var distance := sqrt(rel_x * rel_x + rel_z * rel_z) + 0.001
+	var along := rel_x * pfx + rel_z * pfz
+	var across := rel_x * prx + rel_z * prz
+
+	var lead := clampf(distance / maxf(16.0, spec.speed), 0.05, 0.55)
+	var pred_x := car.x + car.vx * lead
+	var pred_z := car.z + car.vz * lead
+
+	var target_x := pred_x
+	var target_z := pred_z
+	var speed_mult := 1.0
+
+	match enemy.ai_state:
+		AI_SETUP:
+			if absf(across) > 2.5:
+				enemy.ai_side = signf(across)
+			# Approach from behind/beside the player's flank to set up a drive-by swoop
+			target_x = pred_x + prx * (enemy.ai_side * 7.5) - pfx * 4.5
+			target_z = pred_z + prz * (enemy.ai_side * 7.5) - pfz * 4.5
+			if distance < 14.5 or enemy.ai_timer > 3.5:
+				enemy.ai_state = AI_CHARGE
+				enemy.ai_timer = 0.0
+
+		AI_CHARGE:
+			# Swoop parallel past the player's flank at flail reach without ramming into the body
+			var pass_dist := FLAIL_PASS_OFFSET + PLAYER_HALF_WIDTH * 0.3
+			target_x = pred_x + prx * (enemy.ai_side * pass_dist) + pfx * 6.5
+			target_z = pred_z + prz * (enemy.ai_side * pass_dist) + pfz * 6.5
+			speed_mult = 1.08
+			if along > 5.5 or enemy.ai_timer > 2.6:
+				enemy.ai_state = AI_RECOVER
+				enemy.ai_timer = 0.0
+
+		AI_RECOVER:
+			# Peel outward away from the player before looping back
+			target_x = car.x + prx * (enemy.ai_side * 15.0) + pfx * 11.0
+			target_z = car.z + prz * (enemy.ai_side * 15.0) + pfz * 11.0
+			if enemy.ai_timer >= 1.45 or distance > 16.0:
+				enemy.ai_state = AI_SETUP
+				enemy.ai_timer = 0.0
+				if randf() < 0.35:
+					enemy.ai_side = -enemy.ai_side
+
+	# Active nose-avoidance: if bike is right in front of the player's bumper, swerve outward
+	if along > 0.5 and along < 12.5 and absf(across) < 4.2:
+		var dodge_side := signf(across) if absf(across) > 0.4 else enemy.ai_side
+		target_x += prx * (dodge_side * 10.0)
+		target_z += prz * (dodge_side * 10.0)
+
+	_drive_toward(enemy, dt, target_x, target_z, stats, speed_mult)
+
+
+func _drive_toward(enemy: Enemy, dt: float, target_x: float, target_z: float, stats: Upgrades.Stats, speed_mult: float) -> void:
+	var spec := enemy.spec
 	var loose := maxf(enemy.blind, enemy.reel) * spec.sway
 	var desired := atan2(target_x - enemy.x, target_z - enemy.z) + sin(enemy.sway_phase) * SWAY_ANGLE * loose
 	var err := SimMath.wrap_angle(desired - enemy.heading)
@@ -888,7 +1163,7 @@ func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> voi
 
 	var fx := sin(enemy.heading)
 	var fz := cos(enemy.heading)
-	var cap := spec.speed
+	var cap := spec.speed * speed_mult
 	if enemy.blind_timer > 0.0:
 		cap *= BLINDED_SPEED_FACTOR
 	if enemy.slow_timer > 0.0:
@@ -902,47 +1177,230 @@ func _steer(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -> voi
 	enemy.vz = fz * forward - fx * side_slip
 
 
-func _collide_with_car(enemy: Enemy, car: CarBody, stats: Upgrades.Stats, damage_scale: float, on_player_hit: Callable, wrecked: bool) -> void:
-	var spec := enemy.spec
-	var fx := sin(car.heading)
-	var fz := cos(car.heading)
-	var reach := CAR_CIRCLE_RADIUS + spec.radius
-	var best_depth := 0.0
-	var nx := 0.0
-	var nz := 0.0
-	for side: float in [-1.0, 1.0]:
-		var dx := enemy.x - (car.x + fx * CAR_CIRCLE_OFFSET * side)
-		var dz := enemy.z - (car.z + fz * CAR_CIRCLE_OFFSET * side)
-		var dist := sqrt(dx * dx + dz * dz)
-		if dist < 0.001:
-			dist = 0.001
-		var depth := reach - dist
-		if depth > best_depth:
-			best_depth = depth
-			nx = dx / dist
-			nz = dz / dist
-	if best_depth <= 0.0:
+func _dist_to_player_obb(px: float, pz: float, car: CarBody, stats: Upgrades.Stats) -> float:
+	var pfx := sin(car.heading)
+	var pfz := cos(car.heading)
+	var prx := pfz
+	var prz := -pfx
+	var hl := PLAYER_HALF_LENGTH + (PLAYER_PLOW_EXTRA_LENGTH if stats.ram_front_armor > 0.0 else 0.0)
+	var hw := PLAYER_HALF_WIDTH
+	var dx := px - car.x
+	var dz := pz - car.z
+	var local_f := dx * pfx + dz * pfz
+	var local_r := dx * prx + dz * prz
+	var clamped_f := clampf(local_f, -hl, hl)
+	var clamped_r := clampf(local_r, -hw, hw)
+	var df := local_f - clamped_f
+	var dr := local_r - clamped_r
+	return sqrt(df * df + dr * dr)
+
+
+func _update_biker_flail(
+	enemy: Enemy,
+	dt: float,
+	car: CarBody,
+	stats: Upgrades.Stats,
+	damage_scale: float,
+	on_player_hit: Callable,
+	on_bump: Callable,
+) -> void:
+	enemy.flail_cooldown = maxf(0.0, enemy.flail_cooldown - dt)
+	if enemy.blind >= 0.45:
+		enemy.flail_state = FLAIL_IDLE
+		enemy.flail_timer = 0.0
 		return
 
+	var bfx := sin(enemy.heading)
+	var bfz := cos(enemy.heading)
+	var brx := bfz
+	var brz := -bfx
+	var to_car_x := car.x - enemy.x
+	var to_car_z := car.z - enemy.z
+	var side_dot := to_car_x * brx + to_car_z * brz
+	if absf(side_dot) > 0.25 and enemy.flail_state != FLAIL_STRIKE:
+		enemy.flail_side = signf(side_dot)
+
+	var surface_dist := _dist_to_player_obb(enemy.x, enemy.z, car, stats)
+
+	match enemy.flail_state:
+		FLAIL_IDLE:
+			if enemy.flail_cooldown <= 0.0 and surface_dist <= FLAIL_TRIGGER_DIST and enemy.ai_state != AI_RECOVER:
+				enemy.flail_state = FLAIL_WINDUP
+				enemy.flail_timer = FLAIL_WINDUP_SECONDS
+				enemy.flail_phase = 0.0
+				enemy.flail_hit_done = false
+
+		FLAIL_WINDUP:
+			enemy.flail_timer -= dt
+			enemy.flail_phase += FLAIL_SPIN_SPEED * dt
+			var elapsed := FLAIL_WINDUP_SECONDS - enemy.flail_timer
+			if enemy.flail_timer <= 0.0 or (elapsed >= FLAIL_MIN_WINDUP and surface_dist <= FLAIL_REACH):
+				enemy.flail_state = FLAIL_STRIKE
+				enemy.flail_timer = FLAIL_STRIKE_SECONDS
+				enemy.flail_hit_done = false
+			elif surface_dist > FLAIL_TRIGGER_DIST + 4.0:
+				enemy.flail_state = FLAIL_IDLE
+
+		FLAIL_STRIKE:
+			enemy.flail_timer -= dt
+			if not enemy.flail_hit_done and surface_dist <= FLAIL_REACH:
+				enemy.flail_hit_done = true
+				on_player_hit.call(enemy, enemy.spec.damage * damage_scale, 14.0)
+				if on_bump.is_valid():
+					on_bump.call(enemy, 0.45)
+			if enemy.flail_timer <= 0.0:
+				enemy.flail_state = FLAIL_FOLLOW
+				enemy.flail_timer = FLAIL_FOLLOW_SECONDS
+				enemy.flail_cooldown = FLAIL_COOLDOWN_SECONDS
+				# Peel away after the drive-by strike
+				enemy.ai_state = AI_RECOVER
+				enemy.ai_timer = 0.0
+
+		FLAIL_FOLLOW:
+			enemy.flail_timer -= dt
+			if enemy.flail_timer <= 0.0:
+				enemy.flail_state = FLAIL_IDLE
+
+
+static func _face_vuln(face: int) -> float:
+	match face:
+		FACE_SIDE: return FACE_VULN_SIDE
+		FACE_REAR: return FACE_VULN_REAR
+		_: return FACE_VULN_FRONT
+
+
+static func _classify_face(nx: float, nz: float, fx: float, fz: float, rx: float, rz: float) -> int:
+	var fwd := nx * fx + nz * fz
+	var side := absf(nx * rx + nz * rz)
+	if absf(fwd) >= side:
+		return FACE_FRONT if fwd > 0.0 else FACE_REAR
+	return FACE_SIDE
+
+
+func _collide_with_car(
+	enemy: Enemy,
+	car: CarBody,
+	stats: Upgrades.Stats,
+	damage_scale: float,
+	on_player_hit: Callable,
+	on_bump: Callable,
+	wrecked: bool,
+) -> void:
+	var spec := enemy.spec
+	var p_hl := PLAYER_HALF_LENGTH + (PLAYER_PLOW_EXTRA_LENGTH if stats.ram_front_armor > 0.0 else 0.0)
+	var p_hw := PLAYER_HALF_WIDTH
+	var e_hl := spec.half_length
+	var e_hw := spec.half_width
+
+	# Fast broadphase bounding-circle reject
+	var dx := enemy.x - car.x
+	var dz := enemy.z - car.z
+	var broad := sqrt(p_hl * p_hl + p_hw * p_hw) + sqrt(e_hl * e_hl + e_hw * e_hw)
+	if dx * dx + dz * dz >= broad * broad:
+		return
+
+	# 2D OBB Separating Axis Theorem (4 candidate axes)
+	var pfx := sin(car.heading)
+	var pfz := cos(car.heading)
+	var prx := pfz
+	var prz := -pfx
+
+	var efx := sin(enemy.heading)
+	var efz := cos(enemy.heading)
+	var erx := efz
+	var erz := -efx
+
+	var best_depth := INF
+	var nx := 0.0
+	var nz := 0.0
+
+	var axes := [
+		[pfx, pfz],
+		[prx, prz],
+		[efx, efz],
+		[erx, erz],
+	]
+	for axis in axes:
+		var ax: float = axis[0]
+		var az: float = axis[1]
+		var center_dist := dx * ax + dz * az
+		var proj_p := p_hl * absf(pfx * ax + pfz * az) + p_hw * absf(prx * ax + prz * az)
+		var proj_e := e_hl * absf(efx * ax + efz * az) + e_hw * absf(erx * ax + erz * az)
+		var overlap := proj_p + proj_e - absf(center_dist)
+		if overlap <= 0.0:
+			return
+		if overlap < best_depth:
+			best_depth = overlap
+			var s := 1.0 if center_dist >= 0.0 else -1.0
+			nx = ax * s
+			nz = az * s
+
+	# Separate enemy out of player OBB along MTV normal (points from player -> enemy)
 	enemy.x += nx * best_depth
 	enemy.z += nz * best_depth
+
 	var closing := maxf(0.0, (car.vx - enemy.vx) * nx + (car.vz - enemy.vz) * nz)
-	enemy.vx += nx * (3.0 + closing * 0.6)
-	enemy.vz += nz * (3.0 + closing * 0.6)
-	var shove := minf(closing * 0.25, 5.0) * spec.mass
+	var mass_total := PLAYER_MASS + spec.mass
+	var enemy_push := (2.5 + closing * 0.65) * (PLAYER_MASS / mass_total) * 1.4
+	enemy.vx += nx * enemy_push
+	enemy.vz += nz * enemy_push
+	var shove := minf(closing * 0.3, 6.5) * (spec.mass / mass_total) * 1.4
 	car.vx -= nx * shove
 	car.vz -= nz * shove
-	car.yaw_rate += (nx * fz - nz * fx) * shove * 0.08
+	car.yaw_rate += (nx * pfz - nz * pfx) * shove * 0.09
+
 	if wrecked:
 		return
 
-	if stats.ram_damage > 0.0 and car.speed > RAM_MIN_SPEED and enemy.ram_cooldown <= 0.0:
-		enemy.ram_cooldown = RAM_COOLDOWN
-		hurt(enemy, stats.ram_damage * (car.speed / 20.0))
+	# Slow scrapes / gentle pushes deal zero damage
+	if closing <= COLLISION_MIN_SPEED:
+		return
+	if enemy.hit_cooldown > 0.0:
+		return
+	enemy.hit_cooldown = HIT_COOLDOWN
+
+	var player_face := _classify_face(nx, nz, pfx, pfz, prx, prz)
+	var enemy_face := _classify_face(-nx, -nz, efx, efz, erx, erz)
+
+	var is_bike := spec.kind == "bike"
+	var enemy_mass_mult := 0.45 if is_bike else clampf(sqrt(spec.mass / PLAYER_MASS), 0.75, 2.2)
+	var player_mass_mult := 2.4 if is_bike else clampf(sqrt(PLAYER_MASS / spec.mass), 0.5, 1.35)
+
+	var eff := closing - COLLISION_MIN_SPEED
+	var base_impact := eff * COLLISION_DAMAGE_PER_SPEED
+
+	var p_armor := stats.ram_front_armor if player_face == FACE_FRONT else 0.0
+	var p_bonus := stats.ram_front_bonus if player_face == FACE_FRONT else 0.0
+	var e_armor := spec.armor_for_face(enemy_face)
+	var e_bonus := spec.bonus_for_face(enemy_face)
+
+	var raw_to_player := (base_impact * enemy_mass_mult + e_bonus) * _face_vuln(player_face) * damage_scale
+	var dmg_to_player := maxf(0.0, raw_to_player - p_armor)
+
+	var raw_to_enemy := (base_impact * player_mass_mult + p_bonus) * _face_vuln(enemy_face)
+	var dmg_to_enemy := maxf(0.0, raw_to_enemy - e_armor)
+
+	# Bikes are fragile: any real collision with the player car wrecks them in one hit
+	if is_bike and closing >= BIKE_LETHAL_CRASH_SPEED:
+		dmg_to_enemy = maxf(dmg_to_enemy, enemy.max_hp)
+
+	if dmg_to_enemy > 0.0:
+		hurt(enemy, dmg_to_enemy)
 		enemy.flinch = 1.0
-	if enemy.hit_cooldown <= 0.0:
-		enemy.hit_cooldown = HIT_COOLDOWN
-		on_player_hit.call(enemy, spec.damage * damage_scale * (1.0 - stats.ram_guard), closing)
+		if enemy_face == FACE_SIDE:
+			var spin_dir := signf(nx * efz - nz * efx)
+			if spin_dir == 0.0:
+				spin_dir = 1.0
+			enemy.spin = clampf(enemy.spin + spin_dir * minf(eff * 0.25, BUMP_SPIN), -BUMP_SPIN, BUMP_SPIN)
+			enemy.reel = maxf(enemy.reel, clampf(eff / 22.0, 0.25, 1.0))
+
+	if on_bump.is_valid():
+		on_bump.call(enemy, clampf(eff / 25.0, 0.25, 1.0))
+	on_player_hit.call(enemy, dmg_to_player, closing)
+
+	# After an impact, peel off and loop around for a fresh ramming/swoop run
+	enemy.ai_state = AI_RECOVER
+	enemy.ai_timer = 0.0
 
 
 func _separate() -> void:
