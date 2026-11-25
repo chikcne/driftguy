@@ -77,6 +77,9 @@ class Gib:
 	var life: float = 0.0
 	var trail: int = TRAIL_NONE
 	var trail_timer: float = 0.0
+	var hostile: bool = false
+	var damage: float = 0.0
+	var source_enemy: Variant = null
 
 
 var _pool: Array[Gib] = []
@@ -335,6 +338,46 @@ func throw_rider(x: float, z: float, heading: float, vx: float, vy: float, vz: f
 	g.trail = TRAIL_NONE
 
 
+func throw_pipe(
+	x: float,
+	y: float,
+	z: float,
+	vx: float,
+	vy: float,
+	vz: float,
+	yaw: float,
+	damage: float,
+	source_enemy: Variant = null,
+) -> void:
+	var g := _take()
+	g.shape = "pipe"
+	g.mode = MODE_AIR
+	g.x = x
+	g.y = y
+	g.z = z
+	g.vx = vx
+	g.vy = vy
+	g.vz = vz
+	g.yaw = yaw
+	g.pitch = 0.0
+	g.roll = 0.0
+	g.spin_yaw = SimMath.rand_signed(6.0)
+	g.spin_pitch = randf_range(12.0, 18.0)
+	g.spin_roll = SimMath.rand_signed(8.0)
+	g.sx = 0.16
+	g.sy = 0.16
+	g.sz = 1.1
+	g.color = Palette.METAL
+	g.clearance = 0.16
+	g.rest_clearance = 0.09
+	g.age = 0.0
+	g.life = randf_range(4.0, 5.5)
+	g.trail = TRAIL_NONE
+	g.hostile = true
+	g.damage = damage
+	g.source_enemy = source_enemy
+
+
 func sparks(x: float, y: float, z: float, count: int, spd: float, vx: float, vz: float) -> void:
 	for _i in count:
 		var angle := randf() * TAU
@@ -365,7 +408,7 @@ func sparks(x: float, y: float, z: float, count: int, spd: float, vx: float, vz:
 		g.trail = TRAIL_NONE
 
 
-func update_gibs(dt: float, smoke: SmokeSystem) -> void:
+func update_gibs(dt: float, smoke: SmokeSystem, car: CarBody = null, on_pipe_hit: Callable = Callable()) -> void:
 	for g in _pool:
 		if not g.live:
 			continue
@@ -374,16 +417,96 @@ func update_gibs(dt: float, smoke: SmokeSystem) -> void:
 			g.live = false
 			continue
 		if g.mode == MODE_AIR:
+			var prev_x := g.x
+			var prev_y := g.y
+			var prev_z := g.z
 			_fly(g, dt, smoke)
+			if g.hostile and car != null:
+				_check_pipe_hit_car(g, prev_x, prev_y, prev_z, car, on_pipe_hit)
 		elif g.mode == MODE_GROUND:
 			_settle(g, dt)
 	_render()
+
+
+func _check_pipe_hit_car(g: Gib, prev_x: float, prev_y: float, prev_z: float, car: CarBody, on_pipe_hit: Callable) -> void:
+	var gnd := DesertTerrain.ground_height(car.x, car.z)
+	var pfx := sin(car.heading)
+	var pfz := cos(car.heading)
+	var prx := pfz
+	var prz := -pfx
+	var hit_hl := 2.35
+	var hit_hw := 1.15
+
+	var hit := false
+	var hx := g.x
+	var hy := g.y
+	var hz := g.z
+	var local_f := 0.0
+	var local_r := 0.0
+	for frac: float in [0.5, 1.0]:
+		var sx := lerpf(prev_x, g.x, frac)
+		var sy := lerpf(prev_y, g.y, frac)
+		var sz := lerpf(prev_z, g.z, frac)
+		if sy < gnd - 0.1 or sy > gnd + 2.25:
+			continue
+		var dx := sx - car.x
+		var dz := sz - car.z
+		var lf := dx * pfx + dz * pfz
+		var lr := dx * prx + dz * prz
+		if absf(lf) <= hit_hl and absf(lr) <= hit_hw:
+			hit = true
+			hx = sx
+			hy = sy
+			hz = sz
+			local_f = lf
+			local_r = lr
+			break
+	if not hit:
+		return
+
+	# Pipe struck the player vehicle: ricochet it off with debris physics
+	g.hostile = false
+	g.x = hx
+	g.y = hy
+	g.z = hz
+	var pen_f := hit_hl - absf(local_f)
+	var pen_r := hit_hw - absf(local_r)
+	var nx := 0.0
+	var nz := 0.0
+	if pen_f < pen_r:
+		var s := 1.0 if local_f >= 0.0 else -1.0
+		nx = pfx * s
+		nz = pfz * s
+	else:
+		var s := 1.0 if local_r >= 0.0 else -1.0
+		nx = prx * s
+		nz = prz * s
+
+	var rvx := g.vx - car.vx
+	var rvz := g.vz - car.vz
+	var impact_spd := sqrt(rvx * rvx + rvz * rvz)
+	var vn := rvx * nx + rvz * nz
+	if vn < 0.0:
+		g.vx -= 1.45 * vn * nx
+		g.vz -= 1.45 * vn * nz
+	g.vx = g.vx * 0.45 + car.vx * 0.35 + nx * randf_range(4.0, 8.0)
+	g.vz = g.vz * 0.45 + car.vz * 0.35 + nz * randf_range(4.0, 8.0)
+	g.vy = randf_range(5.5, 9.5)
+	g.spin_yaw = SimMath.rand_signed(18.0)
+	g.spin_pitch = SimMath.rand_signed(20.0)
+	g.spin_roll = SimMath.rand_signed(18.0)
+	sparks(g.x, g.y, g.z, 6, 12.0, car.vx, car.vz)
+	if on_pipe_hit.is_valid():
+		on_pipe_hit.call(g.source_enemy, g.damage, impact_spd, g.x, g.y, g.z)
 
 
 func _take() -> Gib:
 	var g := _pool[_cursor]
 	_cursor = (_cursor + 1) % MAX_GIBS
 	g.live = true
+	g.hostile = false
+	g.damage = 0.0
+	g.source_enemy = null
 	return g
 
 
@@ -420,6 +543,7 @@ func _fly(g: Gib, dt: float, smoke: SmokeSystem) -> void:
 	var fl := DesertTerrain.ground_height(g.x, g.z) + g.clearance
 	if g.y > fl or g.vy > 0.0:
 		return
+	g.hostile = false
 	g.y = fl
 	var impact := -g.vy
 	var spd := sqrt(g.vx * g.vx + g.vz * g.vz)

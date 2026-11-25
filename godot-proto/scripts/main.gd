@@ -144,6 +144,8 @@ var _cb_hit_barrels: Callable
 var _cb_barrel_break: Callable
 var _cb_collect: Callable
 var _cb_shot: Callable
+var _cb_throw_pipe: Callable
+var _cb_pipe_hit: Callable
 
 
 func _ready() -> void:
@@ -227,6 +229,8 @@ func _ready() -> void:
 	_cb_barrel_break = Callable(self, "_on_barrel_broken")
 	_cb_collect = Callable(self, "_collect")
 	_cb_shot = Callable(_audio, "shot")
+	_cb_throw_pipe = Callable(_gibs, "throw_pipe")
+	_cb_pipe_hit = Callable(self, "_on_pipe_hit")
 	_spawner.on_threat = Callable(self, "_on_threat")
 
 	_reset_run()
@@ -489,6 +493,7 @@ func _simulate(dt: float) -> void:
 		_cb_bump,
 		_cb_scrape,
 		_cb_kill,
+		_cb_throw_pipe,
 	)
 	_world.step_world(dt, _car.x, _car.z)
 	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot, _cb_hit_barrels)
@@ -499,7 +504,7 @@ func _simulate(dt: float) -> void:
 	_combat.update_pickups(dt, _car, _stats.magnet_radius, _cb_collect)
 
 	_effects.update_effects(dt)
-	_gibs.update_gibs(dt, _smoke)
+	_gibs.update_gibs(dt, _smoke, _car, _cb_pipe_hit)
 	_update_smoke(dt)
 	_update_car_visuals(dt)
 	_update_camera(dt)
@@ -752,6 +757,17 @@ func _hurt_player(enemy: EnemySystem.Enemy, damage: float, closing_speed: float)
 	_hp -= damage
 	_hud.flash_damage()
 	_haptic(180)
+
+
+func _on_pipe_hit(_enemy: Variant, damage: float, impact_speed: float, hx: float, _hy: float, hz: float) -> void:
+	_shake = maxf(_shake, 0.18 + SimMath.saturate(impact_speed / 35.0) * 0.22)
+	_audio.crunch(0.45, _loudness_at(hx, hz))
+	if damage <= 0.0 or _invulnerable > 0.0:
+		return
+	_invulnerable = HIT_INVULNERABILITY
+	_hp -= damage
+	_hud.flash_damage()
+	_haptic(120)
 
 
 func _on_enemy_wrecked(enemy: EnemySystem.Enemy) -> void:

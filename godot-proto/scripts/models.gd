@@ -35,20 +35,14 @@ static func build_rider_models() -> Dictionary:
 		.box(Vector3(0.16, 0.16, 0.16), Vector3(0.0, 0.0, 0.72), Palette.RAIDER_BONE) \
 		.build()
 
-	# Spiked wooden baseball bat held in the biker's hand (origin at grip, extends along +Z)
+	# Weathered metal pipe held by biker before throwing (origin at grip, extends along +Z)
 	kit \
-		.cylinder(0.08, 0.09, 0.36, 6, Vector3(0.0, 0.0, 0.16), Palette.RAIDER_BLACK, Vector3(HALF_PI, 0.0, 0.0)) \
-		.cylinder(0.11, 0.08, 0.32, 6, Vector3(0.0, 0.0, 0.48), Palette.DEAD_WOOD, Vector3(HALF_PI, 0.0, 0.0)) \
-		.cylinder(0.18, 0.11, 0.56, 7, Vector3(0.0, 0.0, 0.90), Palette.ROOT, Vector3(HALF_PI, 0.0, 0.0)) \
-		.cylinder(0.19, 0.19, 0.10, 7, Vector3(0.0, 0.0, 0.82), Palette.METAL_DARK, Vector3(HALF_PI, 0.0, 0.0)) \
-		.cylinder(0.0, 0.07, 0.24, 5, Vector3(0.16, 0.0, 0.94), Palette.RAIDER_BONE, Vector3(0.0, 0.0, -HALF_PI)) \
-		.cylinder(0.0, 0.07, 0.24, 5, Vector3(-0.16, 0.0, 1.06), Palette.RAIDER_BONE, Vector3(0.0, 0.0, HALF_PI)) \
-		.cylinder(0.0, 0.07, 0.24, 5, Vector3(0.0, 0.16, 1.00), Palette.RAIDER_BONE, Vector3.ZERO) \
-		.cylinder(0.0, 0.07, 0.24, 5, Vector3(0.0, -0.16, 1.12), Palette.RAIDER_BONE, Vector3(PI, 0.0, 0.0)) \
-		.cylinder(0.0, 0.08, 0.20, 5, Vector3(0.0, 0.0, 1.26), Palette.RAIDER_BONE, Vector3(HALF_PI, 0.0, 0.0))
-	var bat := kit.build()
+		.cylinder(0.14, 0.14, 1.05, 7, Vector3(0.0, 0.0, 0.42), Palette.METAL, Vector3(HALF_PI, 0.0, 0.0)) \
+		.cylinder(0.18, 0.18, 0.12, 7, Vector3(0.0, 0.0, 0.92), Palette.RUST_DARK, Vector3(HALF_PI, 0.0, 0.0)) \
+		.cylinder(0.17, 0.17, 0.10, 7, Vector3(0.0, 0.0, -0.06), Palette.METAL_DARK, Vector3(HALF_PI, 0.0, 0.0))
+	var pipe := kit.build()
 
-	return { "body": body, "arm": arm, "bat": bat }
+	return { "body": body, "arm": arm, "pipe": pipe }
 
 
 static func build_enemy_models() -> Dictionary:

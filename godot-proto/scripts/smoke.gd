@@ -498,6 +498,47 @@ func sample(x: float, z: float, out: SmokeSample, stir_vx: float, stir_vz: float
 	return out
 
 
+func sample_density(x: float, z: float) -> float:
+	var total := 0.0
+	var cx := int(floor(x / GRID_CELL)) - _grid_origin_x
+	var cz := int(floor(z / GRID_CELL)) - _grid_origin_z
+	var min_x := maxi(0, cx - SAMPLE_REACH_CELLS)
+	var max_x := mini(GRID_SPAN - 1, cx + SAMPLE_REACH_CELLS)
+	var min_z := maxi(0, cz - SAMPLE_REACH_CELLS)
+	var max_z := mini(GRID_SPAN - 1, cz + SAMPLE_REACH_CELLS)
+	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
+		for gx in range(min_x, max_x + 1):
+			var idx := _grid_head[row + gx]
+			while idx >= 0:
+				var dx := px[idx] - x
+				var dz := pz[idx] - z
+				var r := radius[idx]
+				var dist_sq := dx * dx + dz * dz
+				if dist_sq < r * r:
+					total += strength[idx] * (1.0 - dist_sq / (r * r))
+				idx = _grid_next[idx]
+	return total
+
+
+func obscuration_along_ray(x0: float, z0: float, x1: float, z1: float) -> float:
+	var dx := x1 - x0
+	var dz := z1 - z0
+	var dist := sqrt(dx * dx + dz * dz)
+	if dist < 0.01:
+		return sample_density(x0, z0)
+	var steps := clampi(int(ceil(dist / 2.5)), 2, 12)
+	var peak := 0.0
+	var accum := 0.0
+	for i in range(steps + 1):
+		var t := float(i) / float(steps)
+		var d := sample_density(x0 + dx * t, z0 + dz * t)
+		if d > peak:
+			peak = d
+		accum += d
+	return maxf(peak, accum / float(steps + 1) * 1.6)
+
+
 func shockwave(x: float, z: float, reach: float, spd: float) -> void:
 	var reach_sq := reach * reach
 	for i in count:

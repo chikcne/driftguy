@@ -30,11 +30,10 @@ const AI_SETUP := 0
 const AI_CHARGE := 1
 const AI_RECOVER := 2
 
-# Biker bat states
-const BAT_IDLE := 0
-const BAT_WINDUP := 1
-const BAT_SWING := 2
-const BAT_FOLLOW := 3
+# Biker pipe-throwing states
+const PIPE_IDLE := 0
+const PIPE_WINDUP := 1
+const PIPE_FOLLOW := 2
 
 # Player OBB & momentum collision tuning
 const PLAYER_HALF_LENGTH := 2.15
@@ -48,18 +47,18 @@ const FACE_VULN_SIDE := 1.5
 const FACE_VULN_REAR := 1.15
 const BIKE_LETHAL_CRASH_SPEED := 9.0
 
-# Biker swoop & fixed spiked-bat swing tuning
-const BAT_WINDUP_SECONDS := 0.34
-const BAT_SWING_SECONDS := 0.22
-const BAT_FOLLOW_SECONDS := 0.26
-const BAT_COOLDOWN_SECONDS := 1.65
-const BAT_TRIGGER_LATERAL := 3.6
-const BAT_TRIGGER_ALONG_MIN := -5.5
-const BAT_TRIGGER_ALONG_MAX := 1.2
-const BAT_PASS_OFFSET := 2.35
-const BAT_SWING_REACH := 1.75
-const BAT_HIT_RADIUS := 0.85
-const BAT_DAMAGE := 6.5
+# Biker swoop & smoke-obscured pipe throw tuning
+const PIPE_WINDUP_SECONDS := 0.36
+const PIPE_FOLLOW_SECONDS := 0.28
+const PIPE_COOLDOWN_SECONDS := 1.7
+const PIPE_RANGE_MIN := 2.6
+const PIPE_RANGE_MAX := 15.5
+const PIPE_PASS_OFFSET := 4.0
+const PIPE_THROW_SPEED := 34.0
+const PIPE_DAMAGE := 3.5
+const PIPE_SMOKE_LOS_THRESHOLD := 0.25
+const PIPE_CLEAR_SPREAD := 0.04
+const PIPE_OBSCURED_SPREAD := 0.68
 const BLAST_KNOCK := 11.0
 const KNOCK_FADE := 5.0
 const BLIND_RISE := 4.0
@@ -209,11 +208,10 @@ class Enemy:
 	var ai_state: int = AI_SETUP
 	var ai_timer: float = 0.0
 	var ai_side: float = 1.0
-	var bat_state: int = BAT_IDLE
-	var bat_timer: float = 0.0
-	var bat_cooldown: float = 0.0
-	var bat_side: float = 1.0
-	var bat_hit_done: bool = false
+	var pipe_state: int = PIPE_IDLE
+	var pipe_timer: float = 0.0
+	var pipe_cooldown: float = 0.0
+	var pipe_side: float = 1.0
 
 
 class Threat:
@@ -526,7 +524,7 @@ var wrecks: Array[Enemy] = []
 var _batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _riders: SimMath.InstanceBatch
 var _arms: SimMath.InstanceBatch
-var _bats: SimMath.InstanceBatch
+var _pipes: SimMath.InstanceBatch
 var _sample := SmokeSystem.SmokeSample.new()
 var _contact := World.Contact.new()
 var _shove := LooseSystem.ShoveResult.new()
@@ -537,7 +535,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	# Positional args: kind, radius, hp, speed, accel, turn, grip, damage, scrap, half_length, half_width, mass, sway, wreck_seconds, wreck_spin,
 	#                  front_armor, side_armor, rear_armor, front_bonus, side_bonus, rear_bonus, ram_arc
 	specs = {
-		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, BAT_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
+		"bike": EnemySpec.new("bike", 0.95, 8.0, 30.0, 16.0, 2.8, 3.6, PIPE_DAMAGE, 1.0, 0.9, 0.4, 0.2, 1.0, 0.9, 4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0),
 		"buggy": EnemySpec.new("buggy", 1.55, 26.0, 26.0, 12.0, 2.1, 2.6, 7.0, 2.0, 1.5, 0.95, 0.6, 0.85, 1.25, 4.6, 18.0, 0.0, 0.0, 10.0, 0.0, 0.0, 14.0),
 		"truck": EnemySpec.new("truck", 2.4, 110.0, 19.0, 7.0, 1.2, 2.0, 18.0, 7.0, 2.8, 1.2, 1.5, 0.5, 1.6, 2.4, 28.0, 6.0, 0.0, 16.0, 2.0, 0.0, 22.0),
 		"interceptor": EnemySpec.new("interceptor", 1.7, 60.0, 35.0, 15.0, 1.9, 2.2, 14.0, 4.0, 2.2, 1.0, 0.9, 0.75, 1.35, 4.0, 20.0, 0.0, 0.0, 14.0, 0.0, 0.0, 16.0),
@@ -563,7 +561,7 @@ func setup(base_material: StandardMaterial3D) -> void:
 	var rider_models := Models.build_rider_models()
 	_riders = SimMath.InstanceBatch.new(self, rider_models["body"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiders")
 	_arms = SimMath.InstanceBatch.new(self, rider_models["arm"], enemy_mat, MAX_ENEMIES * 2, false, true, "EnemyRiderArms")
-	_bats = SimMath.InstanceBatch.new(self, rider_models["bat"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderBats")
+	_pipes = SimMath.InstanceBatch.new(self, rider_models["pipe"], enemy_mat, MAX_ENEMIES, false, true, "EnemyRiderPipes")
 
 
 func clear() -> void:
@@ -603,7 +601,7 @@ func spawn(kind: String, x: float, z: float, hp_scale: float, facing: float) -> 
 	e.dust_timer = randf() * DUST_INTERVAL
 	e.flank = SimMath.rand_signed(1.0)
 	e.ai_side = -1.0 if randf() < 0.5 else 1.0
-	e.bat_side = -e.ai_side
+	e.pipe_side = -e.ai_side
 	e.sway_phase = randf() * TAU
 	e.sway_rate = randf_range(SWAY_RATE_MIN, SWAY_RATE_MAX)
 	active.append(e)
@@ -668,6 +666,7 @@ func update_enemies(
 	on_bump: Callable,
 	on_scrape: Callable,
 	on_kill: Callable,
+	on_throw_pipe: Callable = Callable(),
 ) -> void:
 	var stir := minf(1.0, STIR_RATE * dt)
 	var knock_fade := exp(-KNOCK_FADE * dt)
@@ -721,7 +720,7 @@ func update_enemies(
 		world.shove(enemy, spec.radius, spec.mass, _shove)
 		_collide_with_car(enemy, car, stats, damage_scale, on_player_hit, on_bump, false)
 		if spec.kind == "bike":
-			_update_biker_bat(enemy, dt, car, stats, damage_scale, on_player_hit, on_bump)
+			_update_biker_pipe(enemy, dt, car, smoke, damage_scale, on_throw_pipe)
 
 		enemy.dust_timer -= dt
 		if enemy.dust_timer <= 0.0:
@@ -887,7 +886,7 @@ func render_all(time_s: float) -> void:
 		batch.begin()
 	_riders.begin()
 	_arms.begin()
-	_bats.begin()
+	_pipes.begin()
 	for enemy in active:
 		_draw_enemy(enemy, time_s)
 	for enemy in wrecks:
@@ -896,7 +895,7 @@ func render_all(time_s: float) -> void:
 		batch.commit()
 	_riders.commit()
 	_arms.commit()
-	_bats.commit()
+	_pipes.commit()
 
 
 func _draw_enemy(enemy: Enemy, time_s: float) -> void:
@@ -922,19 +921,18 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 	var seat_pitch := RIDER_RECOIL * blind
 	var seat_roll := sin(wiggle) * RIDER_WIGGLE_ROLL * blind
 
-	var weapon_side := enemy.bat_side
-	if blind < 0.45:
-		match enemy.bat_state:
-			BAT_WINDUP:
-				var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_WINDUP_SECONDS, 0.0, 1.0))
-				seat_yaw -= weapon_side * 0.28 * u
-			BAT_SWING:
-				var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
-				seat_yaw += weapon_side * lerpf(-0.28, 0.38, s)
-				seat_roll += weapon_side * sin(s * PI) * 0.2
-			BAT_FOLLOW:
-				var f := clampf(enemy.bat_timer / BAT_FOLLOW_SECONDS, 0.0, 1.0)
-				seat_yaw += weapon_side * 0.38 * f
+	var weapon_side := enemy.pipe_side
+	var choking := enemy.blind >= 0.65
+	if not choking:
+		match enemy.pipe_state:
+			PIPE_WINDUP:
+				var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.pipe_timer / PIPE_WINDUP_SECONDS, 0.0, 1.0))
+				seat_yaw -= weapon_side * 0.32 * u
+				seat_pitch -= 0.14 * u
+			PIPE_FOLLOW:
+				var f := clampf(enemy.pipe_timer / PIPE_FOLLOW_SECONDS, 0.0, 1.0)
+				seat_yaw += weapon_side * 0.35 * f
+				seat_roll += weapon_side * 0.14 * f
 
 	var seat := _riders.push_under(
 		mount,
@@ -943,48 +941,40 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 		1.0, 1.0, 1.0,
 	)
 
+	var has_pipe_in_hand := (not choking) and (enemy.pipe_state == PIPE_WINDUP or (enemy.pipe_state == PIPE_IDLE and enemy.pipe_cooldown <= 0.45))
 	for side: float in [-1.0, 1.0]:
 		var arm_yaw := side * lerpf(ARM_GRIP_YAW, ARM_COVER_YAW, blind)
 		var arm_pitch := lerpf(ARM_GRIP_PITCH, ARM_COVER_PITCH, blind) + (sin(wiggle * 1.7 + side) * ARM_RUB - side * 0.07) * blind
 		var arm_len := lerpf(ARM_GRIP_LENGTH, ARM_COVER_LENGTH, blind)
-		var is_weapon_arm := (side * weapon_side > 0.0) and blind < 0.45
+		var is_throw_arm := (side * weapon_side > 0.0) and not choking
 
-		var bat_yaw := side * 0.15
-		var bat_pitch := -0.95
+		var pipe_yaw := 0.0
+		var pipe_pitch := 0.0
 
-		if is_weapon_arm:
-			match enemy.bat_state:
-				BAT_IDLE:
-					# Casual ready carry off the grip, bat angled up-back over shoulder
-					arm_yaw = side * 0.55
-					arm_pitch = 0.25
-					arm_len = 1.0
-					bat_yaw = side * 0.15
-					bat_pitch = -0.95
-				BAT_WINDUP:
-					# Fixed wind-up: cock arm and bat back behind the shoulder
-					var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_WINDUP_SECONDS, 0.0, 1.0))
-					arm_yaw = side * lerpf(0.55, 2.25, u)
-					arm_pitch = lerpf(0.25, -0.30, u)
-					arm_len = 1.05
-					bat_yaw = side * lerpf(0.15, 0.45, u)
-					bat_pitch = lerpf(-0.95, -0.20, u)
-				BAT_SWING:
-					# Fixed horizontal baseball-bat swing arc from rear-side to front-side
-					var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
-					arm_yaw = side * lerpf(2.25, 0.30, s)
-					arm_pitch = lerpf(-0.25, 0.12, s)
-					arm_len = 1.15
-					bat_yaw = side * lerpf(0.45, -0.25, s)
-					bat_pitch = 0.05
-				BAT_FOLLOW:
-					# Smooth follow-through returning to ready carry
-					var f := clampf(enemy.bat_timer / BAT_FOLLOW_SECONDS, 0.0, 1.0)
-					arm_yaw = side * lerpf(0.55, 0.30, f)
-					arm_pitch = lerpf(0.25, 0.12, f)
-					arm_len = lerpf(1.0, 1.15, f)
-					bat_yaw = side * lerpf(0.15, -0.25, f)
-					bat_pitch = lerpf(-0.95, 0.05, f)
+		if is_throw_arm:
+			match enemy.pipe_state:
+				PIPE_IDLE:
+					if has_pipe_in_hand:
+						# Hold a metal pipe ready off the grip
+						arm_yaw = side * 0.45
+						arm_pitch = 0.30
+						arm_len = 1.0
+						pipe_yaw = side * 0.2
+						pipe_pitch = -0.65
+				PIPE_WINDUP:
+					# Cock throwing arm high and back behind shoulder to hurl the pipe
+					var u := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.pipe_timer / PIPE_WINDUP_SECONDS, 0.0, 1.0))
+					arm_yaw = side * lerpf(0.45, 2.05, u)
+					arm_pitch = lerpf(0.30, -1.05, u)
+					arm_len = 1.08
+					pipe_yaw = side * lerpf(0.2, 0.35, u)
+					pipe_pitch = lerpf(-0.65, 0.35, u)
+				PIPE_FOLLOW:
+					# Whipped forward after release (empty-handed while pipe flies)
+					var f := clampf(enemy.pipe_timer / PIPE_FOLLOW_SECONDS, 0.0, 1.0)
+					arm_yaw = side * lerpf(ARM_GRIP_YAW, 1.15, f)
+					arm_pitch = lerpf(ARM_GRIP_PITCH, -0.05, f)
+					arm_len = lerpf(ARM_GRIP_LENGTH, 1.18, f)
 
 		var arm_xform := _arms.push_under(
 			seat,
@@ -993,12 +983,8 @@ func _draw_enemy(enemy: Enemy, time_s: float) -> void:
 			1.0, 1.0, arm_len,
 		)
 
-		if side * weapon_side > 0.0:
-			var bat_scale := 0.85 if blind >= 0.45 else 1.05
-			if blind >= 0.45:
-				bat_yaw = side * 0.4
-				bat_pitch = 0.9
-			_bats.push_under(arm_xform, 0.0, 0.0, 0.72, bat_yaw, bat_pitch, 0.0, bat_scale, bat_scale, bat_scale)
+		if is_throw_arm and has_pipe_in_hand:
+			_pipes.push_under(arm_xform, 0.0, 0.0, 0.72, pipe_yaw, pipe_pitch, 0.0, 1.0, 1.0, 1.0)
 
 
 func _draw_wreck(enemy: Enemy, time_s: float) -> void:
@@ -1125,29 +1111,28 @@ func _steer_bike(enemy: Enemy, dt: float, car: CarBody, stats: Upgrades.Stats) -
 		AI_SETUP:
 			if absf(across) > 2.5:
 				enemy.ai_side = signf(across)
-			# Stage behind and offset from the player's flank so the biker enters parallel for a bat pass
-			target_x = pred_x + prx * (enemy.ai_side * 6.5) - pfx * 6.5
-			target_z = pred_z + prz * (enemy.ai_side * 6.5) - pfz * 6.5
-			if (distance < 13.5 and along < 1.0) or enemy.ai_timer > 3.5:
+			# Stage behind and offset from the player's flank to swoop in close for a pipe throw
+			target_x = pred_x + prx * (enemy.ai_side * 7.5) - pfx * 5.5
+			target_z = pred_z + prz * (enemy.ai_side * 7.5) - pfz * 5.5
+			if distance < 16.5 or enemy.ai_timer > 3.5:
 				enemy.ai_state = AI_CHARGE
 				enemy.ai_timer = 0.0
 
 		AI_CHARGE:
-			# Line up tightly parallel to the player's flank so the fixed bat swing sweeps the car door
-			target_x = pred_x + prx * (enemy.ai_side * BAT_PASS_OFFSET) + pfx * 5.5
-			target_z = pred_z + prz * (enemy.ai_side * BAT_PASS_OFFSET) + pfz * 5.5
-			# Pace slightly faster than the player during the pass so the swing lands cleanly
-			var desired_spd := maxf(spec.speed * 0.85, car.speed + 6.0)
-			speed_mult = clampf(desired_spd / spec.speed, 0.75, 1.12)
-			if along > 5.0 or enemy.ai_timer > 2.8:
+			# Swoop close alongside the player's flank (close-quarters melee-like skirmish feel)
+			target_x = pred_x + prx * (enemy.ai_side * PIPE_PASS_OFFSET) + pfx * 6.0
+			target_z = pred_z + prz * (enemy.ai_side * PIPE_PASS_OFFSET) + pfz * 6.0
+			var desired_spd := maxf(spec.speed * 0.9, car.speed + 6.0)
+			speed_mult = clampf(desired_spd / spec.speed, 0.8, 1.12)
+			if along > 6.5 or enemy.ai_timer > 2.8:
 				enemy.ai_state = AI_RECOVER
 				enemy.ai_timer = 0.0
 
 		AI_RECOVER:
-			# Peel outward away from the player before looping back
+			# Peel outward away from the player before looping back for another pass
 			target_x = car.x + prx * (enemy.ai_side * 15.0) + pfx * 11.0
 			target_z = car.z + prz * (enemy.ai_side * 15.0) + pfz * 11.0
-			if enemy.ai_timer >= 1.45 or distance > 16.0:
+			if enemy.ai_timer >= 1.45 or distance > 16.5:
 				enemy.ai_state = AI_SETUP
 				enemy.ai_timer = 0.0
 				if randf() < 0.35:
@@ -1204,86 +1189,117 @@ func _dist_to_player_obb(px: float, pz: float, car: CarBody, stats: Upgrades.Sta
 	return sqrt(df * df + dr * dr)
 
 
-func _update_biker_bat(
+func _update_biker_pipe(
 	enemy: Enemy,
 	dt: float,
 	car: CarBody,
-	stats: Upgrades.Stats,
+	smoke: SmokeSystem,
 	damage_scale: float,
-	on_player_hit: Callable,
-	on_bump: Callable,
+	on_throw_pipe: Callable,
 ) -> void:
-	enemy.bat_cooldown = maxf(0.0, enemy.bat_cooldown - dt)
-	if enemy.blind >= 0.45:
-		enemy.bat_state = BAT_IDLE
-		enemy.bat_timer = 0.0
+	enemy.pipe_cooldown = maxf(0.0, enemy.pipe_cooldown - dt)
+	# Heavy smoke directly on the biker forces them to cover their face and aborts throwing
+	if enemy.blind >= 0.65:
+		enemy.pipe_state = PIPE_IDLE
+		enemy.pipe_timer = 0.0
 		return
 
 	var bfx := sin(enemy.heading)
 	var bfz := cos(enemy.heading)
 	var brx := bfz
 	var brz := -bfx
+	var to_car_x := car.x - enemy.x
+	var to_car_z := car.z - enemy.z
+	var dist := sqrt(to_car_x * to_car_x + to_car_z * to_car_z)
 
-	match enemy.bat_state:
-		BAT_IDLE:
-			# Keep bat carried on the side facing the player while lining up
-			var to_car_x := car.x - enemy.x
-			var to_car_z := car.z - enemy.z
+	match enemy.pipe_state:
+		PIPE_IDLE:
 			var side_dot := to_car_x * brx + to_car_z * brz
 			if absf(side_dot) > 0.25:
-				enemy.bat_side = signf(side_dot)
-			if enemy.bat_cooldown > 0.0 or enemy.ai_state == AI_RECOVER:
+				enemy.pipe_side = signf(side_dot)
+			if enemy.pipe_cooldown > 0.0 or enemy.ai_state == AI_RECOVER:
 				return
-			# Start the fixed wind-up once positioned alongside/just behind the player's flank
-			var pfx := sin(car.heading)
-			var pfz := cos(car.heading)
-			var prx := pfz
-			var prz := -pfx
-			var rel_x := enemy.x - car.x
-			var rel_z := enemy.z - car.z
-			var along := rel_x * pfx + rel_z * pfz
-			var across := absf(rel_x * prx + rel_z * prz)
-			if across <= BAT_TRIGGER_LATERAL and along >= BAT_TRIGGER_ALONG_MIN and along <= BAT_TRIGGER_ALONG_MAX:
-				# Lock bat_side for the entire fixed windup + swing (no mid-swing seeking)
-				enemy.bat_side = signf(side_dot) if absf(side_dot) > 0.1 else -enemy.ai_side
-				enemy.bat_state = BAT_WINDUP
-				enemy.bat_timer = BAT_WINDUP_SECONDS
-				enemy.bat_hit_done = false
+			if dist >= PIPE_RANGE_MIN and dist <= PIPE_RANGE_MAX and enemy.ai_state == AI_CHARGE:
+				enemy.pipe_side = signf(side_dot) if absf(side_dot) > 0.1 else -enemy.ai_side
+				enemy.pipe_state = PIPE_WINDUP
+				enemy.pipe_timer = PIPE_WINDUP_SECONDS
 
-		BAT_WINDUP:
-			enemy.bat_timer -= dt
-			if enemy.bat_timer <= 0.0:
-				enemy.bat_state = BAT_SWING
-				enemy.bat_timer = BAT_SWING_SECONDS
-				enemy.bat_hit_done = false
-
-		BAT_SWING:
-			enemy.bat_timer -= dt
-			if not enemy.bat_hit_done:
-				# Fixed swing arc in bike-local frame: sweeps from rear-side (2.25 rad) to front-side (0.30 rad)
-				var s := SimMath.smoothstep_f(0.0, 1.0, 1.0 - clampf(enemy.bat_timer / BAT_SWING_SECONDS, 0.0, 1.0))
-				var arc_angle := enemy.bat_side * lerpf(2.25, 0.30, s)
-				var local_side := sin(arc_angle) * BAT_SWING_REACH
-				var local_fwd := cos(arc_angle) * BAT_SWING_REACH
-				var tip_x := enemy.x + brx * local_side + bfx * local_fwd
-				var tip_z := enemy.z + brz * local_side + bfz * local_fwd
-				if _dist_to_player_obb(tip_x, tip_z, car, stats) <= BAT_HIT_RADIUS:
-					enemy.bat_hit_done = true
-					on_player_hit.call(enemy, enemy.spec.damage * damage_scale, 14.0)
-					if on_bump.is_valid():
-						on_bump.call(enemy, 0.45)
-			if enemy.bat_timer <= 0.0:
-				enemy.bat_state = BAT_FOLLOW
-				enemy.bat_timer = BAT_FOLLOW_SECONDS
-				enemy.bat_cooldown = BAT_COOLDOWN_SECONDS
-				# Peel away after completing the fixed drive-by swing
+		PIPE_WINDUP:
+			enemy.pipe_timer -= dt
+			if enemy.pipe_timer <= 0.0:
+				_release_biker_pipe(enemy, car, smoke, damage_scale, on_throw_pipe)
+				enemy.pipe_state = PIPE_FOLLOW
+				enemy.pipe_timer = PIPE_FOLLOW_SECONDS
+				enemy.pipe_cooldown = PIPE_COOLDOWN_SECONDS
+				# Peel away after hurling the pipe during the drive-by pass
 				enemy.ai_state = AI_RECOVER
 				enemy.ai_timer = 0.0
 
-		BAT_FOLLOW:
-			enemy.bat_timer -= dt
-			if enemy.bat_timer <= 0.0:
-				enemy.bat_state = BAT_IDLE
+		PIPE_FOLLOW:
+			enemy.pipe_timer -= dt
+			if enemy.pipe_timer <= 0.0:
+				enemy.pipe_state = PIPE_IDLE
+
+
+func _release_biker_pipe(
+	enemy: Enemy,
+	car: CarBody,
+	smoke: SmokeSystem,
+	damage_scale: float,
+	on_throw_pipe: Callable,
+) -> void:
+	if not on_throw_pipe.is_valid():
+		return
+	var bfx := sin(enemy.heading)
+	var bfz := cos(enemy.heading)
+	var brx := bfz
+	var brz := -bfx
+
+	var hx := enemy.x + brx * (enemy.pipe_side * 0.55) + bfx * 0.35
+	var hz := enemy.z + brz * (enemy.pipe_side * 0.55) + bfz * 0.35
+	var hy := DesertTerrain.ground_height(hx, hz) + 1.55
+
+	var dx := car.x - hx
+	var dz := car.z - hz
+	var dist := maxf(0.5, sqrt(dx * dx + dz * dz))
+
+	# Check whether drift smoke obscures line of sight between biker and player
+	var obscuration := smoke.obscuration_along_ray(enemy.x, enemy.z, car.x, car.z)
+	var obscured := obscuration >= PIPE_SMOKE_LOS_THRESHOLD or enemy.blind >= 0.25
+
+	var pvx := 0.0
+	var pvy := 0.0
+	var pvz := 0.0
+	var throw_yaw := atan2(dx, dz)
+
+	if not obscured:
+		# Clear line of sight: lead the player's car cleanly with tight accuracy
+		var est_t := clampf(dist / PIPE_THROW_SPEED, 0.08, 0.7)
+		var aim_x := car.x + car.vx * est_t * 0.92
+		var aim_z := car.z + car.vz * est_t * 0.92
+		var adx := aim_x - hx
+		var adz := aim_z - hz
+		var aim_dist := maxf(0.5, sqrt(adx * adx + adz * adz))
+		var flight_t := clampf(aim_dist / PIPE_THROW_SPEED, 0.08, 0.72)
+		throw_yaw = atan2(adx, adz) + SimMath.rand_signed(PIPE_CLEAR_SPREAD)
+		var horiz_spd := clampf((aim_dist / flight_t) * (1.0 + 0.12 * flight_t), 14.0, 56.0)
+		pvx = sin(throw_yaw) * horiz_spd
+		pvz = cos(throw_yaw) * horiz_spd
+		var target_y := DesertTerrain.ground_height(aim_x, aim_z) + 0.95
+		pvy = (target_y - hy) / flight_t + 0.5 * GibSystem.GRAVITY * flight_t
+	else:
+		# Obscured by drift smoke: throw blindly into a wide cone toward the vague direction
+		# (misses the vast majority of the time at range, but gets deadlier up close as the cone narrows)
+		var spread := SimMath.rand_signed(PIPE_OBSCURED_SPREAD)
+		throw_yaw = atan2(dx, dz) + spread
+		var flight_t := clampf(dist / PIPE_THROW_SPEED, 0.1, 0.72)
+		var horiz_spd := clampf((dist / flight_t) * randf_range(0.84, 1.16), 14.0, 48.0)
+		pvx = sin(throw_yaw) * horiz_spd
+		pvz = cos(throw_yaw) * horiz_spd
+		var target_y := DesertTerrain.ground_height(car.x, car.z) + 0.95
+		pvy = (target_y - hy) / flight_t + 0.5 * GibSystem.GRAVITY * flight_t + SimMath.rand_signed(1.6)
+
+	on_throw_pipe.call(hx, hy, hz, pvx, pvy, pvz, throw_yaw, enemy.spec.damage * damage_scale, enemy)
 
 
 static func _face_vuln(face: int) -> float:
