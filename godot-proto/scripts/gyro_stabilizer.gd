@@ -17,19 +17,23 @@ extends RefCounted
 # turning the phone like a steering wheel so counter-rotation can be previewed.
 
 # Screens at or above iPad mini dimensions (744x1133 pt on 6th/7th gen,
-# 768x1024 pt on 1st-5th gen; ~7.9"-8.3") disable gyro & counter-rotation by default.
+# 768x1024 pt on 1st-5th gen; ~7.9"-8.3") disable gyro & counter-rotation by default,
+# and so does a connected controller on any screen.
 # Largest phones (e.g. iPhone 16 Pro Max) are ~440x956 pt (~6.9").
 const LARGE_SCREEN_MIN_SHORT_PT := 700.0
 const LARGE_SCREEN_MIN_LONG_PT := 1000.0
 const LARGE_SCREEN_MIN_INCHES := 7.5
+const DEFAULT_COUNTER_ROTATE_SCALE := 0.75
 
 var gyro_enabled := true
 var max_steer_deg := 38.0
 var deadzone_deg := 2.5
 var steer_curve := 1.25
 var gravity_correction := 0.035 # Complementary filter anchor weight per 60Hz tick
-var counter_rotate_scale := 1.0 # 1.0 = full horizon lock, 0.5 = half, 0.0 = off
+var counter_rotate_scale := DEFAULT_COUNTER_ROTATE_SCALE # 1.0 = full horizon lock, 0.5 = half, 0.0 = off
 var invert_gyro := false
+var gyro_user_set := false
+var counter_rotate_user_set := false
 
 var has_hardware_imu := false
 var raw_gyro := Vector3.ZERO
@@ -46,13 +50,12 @@ var _initialized := false
 var _sim_roll := 0.0
 
 
-func apply_screen_defaults() -> void:
-	if is_large_screen():
-		gyro_enabled = false
-		counter_rotate_scale = 0.0
-	else:
-		gyro_enabled = true
-		counter_rotate_scale = 1.0
+func apply_defaults(controller_connected: bool) -> void:
+	var tilt_driven := not controller_connected and not is_large_screen()
+	if not gyro_user_set:
+		gyro_enabled = tilt_driven
+	if not counter_rotate_user_set:
+		counter_rotate_scale = DEFAULT_COUNTER_ROTATE_SCALE if tilt_driven else 0.0
 
 
 static func is_large_screen() -> bool:

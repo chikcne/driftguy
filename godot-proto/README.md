@@ -17,12 +17,13 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 ## Controls
 
 ### iPhone (Gyro + Touch)
-- **Tilt phone** — Steer (with horizon-locked counter-rotating camera)
-- **AUTO GAS** — Hands-free throttle toggle (ON by default)
-- **BRAKE / REV** — Left thumb pad
+- **Tilt phone** — Steer (with horizon-locked counter-rotating camera; the upgrade picker stays level with it)
+- **Swipe on the left half** — Up to accelerate, down to brake and then reverse; the swipe length sets how hard (full throttle at about 18 mm up, full reverse at about 12 mm down, 2 mm dead zone), holding keeps the level and lifting the thumb coasts
+- **BRAKE** — Left thumb pad (brakes to a stop, never reverses)
 - **NITRO** — Right thumb pad (ignites banked nitrous tank)
 - **DRIFT** — Right thumb handbrake pad
-- **GYRO** (top-right) — Live tuning drawer (Screen Lock `100% / 50% / 0%`, Max Tilt, IMU Fusion, Tilt Zoom Comp, Horizon Bar, Invert Roll, Zero Tilt)
+- **GYRO** (top-right) — Live tuning drawer (Screen Lock `100% / 75% / 50% / 0%`, Max Tilt, IMU Fusion, Tilt Zoom Comp, Horizon Bar, Invert Roll, Zero Tilt)
+- **Defaults** — On phones gyro steering is on and Screen Lock starts at 75%; on iPad-sized screens, or whenever a controller is connected, both start off until you change them in the drawer
 
 ### macOS Desktop Preview / Controller
 - `W` / `S` or `↑` / `↓` (or `RT` / `LT`) — Throttle / Brake & Reverse

@@ -6,8 +6,8 @@ extends CanvasLayer
 # - Bottom gauges (Speed, Hull, Smoke, Nitrous bar + tank pips) & Loadout badges
 # - Off-screen War Party / War Rig threat markers (horizon-lock aware!)
 # - Damage red flash & Nitrous cyan rush radial vignettes
-# - Fixed-to-glass iOS touch controls (Auto Gas, Brake/Rev, Nitro, Drift)
-# - Title, Level-Up (3 upgrade cards), Pause, and Game Over screens
+# - Fixed-to-glass iOS touch controls (left-side swipe throttle, Brake, Nitro, Drift)
+# - Title, Level-Up (3 upgrade cards, horizon-locked like the camera), Pause, and Game Over screens
 # - Collapsible Gyro Tuning drawer + optional Artificial Horizon bar
 
 signal start_pressed
@@ -17,6 +17,7 @@ signal resume_pressed
 signal mute_pressed
 signal recenter_pressed
 signal upgrade_picked(upgrade: Upgrades.UpgradeDef)
+signal throttle_stop_reached
 
 const THREAT_SIDE_MARGIN := 78.0
 const THREAT_VERTICAL_MARGIN := 105.0
@@ -30,13 +31,13 @@ const INDICATOR_MAX_COUNT := 16
 const INDICATOR_ONSCREEN_PAD := 14.0
 const GROUND_FORESHORTENING := 0.8
 
-const LOCK_MODES := [1.0, 0.5, 0.0]
-const LOCK_LABELS := ["LOCK 100%", "HALF 50%", "OFF 0%"]
+const LOCK_MODES := [1.0, 0.75, 0.5, 0.0]
+const LOCK_LABELS := ["LOCK 100%", "LOCK 75%", "HALF 50%", "OFF 0%"]
+const LEVELUP_SCREEN_MARGIN := 16.0
 const TILT_ANGLES := [25.0, 38.0, 50.0, 65.0]
 const FUSION_VALUES := [0.015, 0.035, 0.08, 0.0]
 const FUSION_LABELS := ["SNAPPY", "BALANCED", "FIRM", "PURE GYRO"]
 
-var auto_throttle := true
 var zoom_compensation := true
 var show_horizon := false
 var touch_brake := false
@@ -68,7 +69,7 @@ var _nitro_fill: ColorRect
 var _nitro_tanks_box: HBoxContainer
 var _nitro_pips: Array[ColorRect] = []
 var _nitro_btn: Button
-var _auto_gas_btn: Button
+var _throttle_pad: ThrottlePad
 var _mute_btn: Button
 var _loadout_grid: GridContainer
 var _enemy_arrows: EnemyArrowsOverlay
@@ -98,6 +99,7 @@ var _fusion_idx := 1
 var _title_screen: Control
 var _title_btn: Button
 var _levelup_screen: Control
+var _levelup_box: VBoxContainer
 var _cards_row: HBoxContainer
 var _pause_screen: Control
 var _pause_mute_btn: Button
@@ -173,6 +175,116 @@ class ThreatArrow:
 		draw_polyline(outline, Palette.INK, 2.5, true)
 
 
+class ThrottlePad:
+	extends Control
+
+	signal end_stop_reached
+
+	const FORWARD_TRAVEL_MM := 18.0
+	const REVERSE_TRAVEL_MM := 12.0
+	const DEAD_ZONE_MM := 2.0
+	const MIN_TRAVEL_SCREEN_FRACTION := 0.1
+	const MAX_TRAVEL_SCREEN_FRACTION := 0.34
+	const FALLBACK_SCREEN_HEIGHT_MM := 65.0
+	const MM_PER_INCH := 25.4
+	const BOTTOM_EDGE_MARGIN := 10.0
+	const END_STOP_REARM_LEVEL := 0.9
+	const NO_FINGER := -1
+	const TRACK_WIDTH := 6.0
+	const TRACK_END_HALF_WIDTH := 14.0
+	const KNOB_RADIUS := 22.0
+	const TRACK_COLOR := Color(0.984, 0.945, 0.875, 0.34)
+	const KNOB_COLOR := Color(0.984, 0.945, 0.875, 0.9)
+
+	var drive := 0.0
+
+	var _finger := NO_FINGER
+	var _origin := Vector2.ZERO
+	var _touch_y := 0.0
+	var _forward_travel := 0.0
+	var _reverse_travel := 0.0
+	var _dead_zone := 0.0
+	var _end_stop_armed := true
+
+	func _gui_input(event: InputEvent) -> void:
+		if event is InputEventScreenTouch:
+			var touch := event as InputEventScreenTouch
+			if touch.pressed and _finger == NO_FINGER:
+				_grab(touch.index, touch.position)
+			elif not touch.pressed and touch.index == _finger:
+				release()
+		elif event is InputEventScreenDrag:
+			var drag := event as InputEventScreenDrag
+			if _finger == NO_FINGER:
+				_grab(drag.index, drag.position)
+			elif drag.index == _finger:
+				_follow(drag.position.y)
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_APPLICATION_PAUSED:
+			release()
+
+	func release() -> void:
+		_finger = NO_FINGER
+		_set_drive(0.0)
+
+	func _grab(finger: int, at: Vector2) -> void:
+		var units_per_mm := _units_per_mm()
+		var shortest := size.y * MIN_TRAVEL_SCREEN_FRACTION
+		var longest := size.y * MAX_TRAVEL_SCREEN_FRACTION
+		var room_below := size.y - BOTTOM_EDGE_MARGIN - at.y
+		_finger = finger
+		_origin = at
+		_touch_y = at.y
+		_forward_travel = clampf(FORWARD_TRAVEL_MM * units_per_mm, shortest, longest)
+		_reverse_travel = clampf(minf(REVERSE_TRAVEL_MM * units_per_mm, room_below), shortest, longest)
+		_dead_zone = minf(DEAD_ZONE_MM * units_per_mm, shortest * 0.5)
+		_set_drive(0.0)
+
+	func _follow(touch_y: float) -> void:
+		_touch_y = touch_y
+		_origin.y = clampf(_origin.y, touch_y - _reverse_travel, touch_y + _forward_travel)
+		var pull := _origin.y - touch_y
+		var travel := _forward_travel if pull >= 0.0 else _reverse_travel
+		var level := clampf((absf(pull) - _dead_zone) / (travel - _dead_zone), 0.0, 1.0)
+		_set_drive(level * signf(pull))
+
+	func _set_drive(value: float) -> void:
+		drive = value
+		var level := absf(value)
+		if level < END_STOP_REARM_LEVEL:
+			_end_stop_armed = true
+		elif level >= 1.0 and _end_stop_armed:
+			_end_stop_armed = false
+			end_stop_reached.emit()
+		queue_redraw()
+
+	func _units_per_mm() -> float:
+		var pixels_per_unit := get_viewport().get_final_transform().get_scale().y
+		var dpi := DisplayServer.screen_get_dpi(DisplayServer.window_get_current_screen())
+		if pixels_per_unit <= 0.0 or dpi <= 0:
+			return size.y / FALLBACK_SCREEN_HEIGHT_MM
+		return float(dpi) / MM_PER_INCH / pixels_per_unit
+
+	func _draw() -> void:
+		if _finger == NO_FINGER:
+			return
+		var x := _origin.x
+		var top := Vector2(x, _origin.y - _forward_travel)
+		var bottom := Vector2(x, _origin.y + _reverse_travel)
+		var knob := Vector2(x, _touch_y)
+		var ends := Vector2(TRACK_END_HALF_WIDTH, 0.0)
+		draw_line(top, bottom, TRACK_COLOR, TRACK_WIDTH, true)
+		draw_line(top - ends, top + ends, TRACK_COLOR, TRACK_WIDTH, true)
+		draw_line(bottom - ends, bottom + ends, TRACK_COLOR, TRACK_WIDTH, true)
+		draw_line(_origin - ends * 0.5, _origin + ends * 0.5, TRACK_COLOR, TRACK_WIDTH, true)
+		var drive_color := Palette.REPAIR if drive > 0.0 else Palette.CAR_STRIPE
+		if drive != 0.0:
+			draw_line(_origin, knob, drive_color, TRACK_WIDTH, true)
+		draw_circle(knob, KNOB_RADIUS, KNOB_COLOR if drive == 0.0 else drive_color)
+		draw_arc(knob, KNOB_RADIUS, 0.0, TAU, 32, Palette.INK, 2.0, true)
+
+
 class ThreatMarker:
 	extends RefCounted
 	var root: Control
@@ -186,7 +298,6 @@ class ThreatMarker:
 
 func setup(stabilizer: GyroStabilizer) -> void:
 	_stabilizer = stabilizer
-	_lock_idx = _find_lock_idx(_stabilizer.counter_rotate_scale)
 	layer = 10
 
 	_root = Control.new()
@@ -201,6 +312,7 @@ func setup(stabilizer: GyroStabilizer) -> void:
 	_build_levelup_screen()
 	_build_pause_screen()
 	_build_gameover_screen()
+	sync_gyro_settings()
 
 
 func _process(delta: float) -> void:
@@ -221,6 +333,34 @@ func _process(delta: float) -> void:
 	if _gameover_screen.visible and _retry_btn != null:
 		_retry_btn.pivot_offset = _retry_btn.size * 0.5
 		_retry_btn.scale = Vector2(pulse, pulse)
+	if _levelup_screen.visible:
+		_counter_rotate_upgrade_picker()
+
+
+func touch_drive() -> float:
+	return _throttle_pad.drive
+
+
+func sync_gyro_settings() -> void:
+	_lock_idx = _find_lock_idx(_stabilizer.counter_rotate_scale)
+	_lock_btn.text = "Screen Lock: " + LOCK_LABELS[_lock_idx]
+	_gyro_btn.text = "Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF")
+	_gyro_btn.add_theme_color_override("font_color", Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER)
+
+
+func _counter_rotate_upgrade_picker() -> void:
+	var roll := _stabilizer.display_roll
+	var content := _levelup_box.get_combined_minimum_size()
+	var room := _root.size - Vector2(LEVELUP_SCREEN_MARGIN, LEVELUP_SCREEN_MARGIN) * 2.0
+	var across := absf(cos(roll))
+	var along := absf(sin(roll))
+	var fit := minf(
+		room.x / maxf(1.0, content.x * across + content.y * along),
+		room.y / maxf(1.0, content.x * along + content.y * across),
+	)
+	_levelup_box.pivot_offset = _levelup_box.size * 0.5
+	_levelup_box.rotation = -roll
+	_levelup_box.scale = Vector2.ONE * minf(1.0, fit)
 
 
 func consume_touch_nitro() -> bool:
@@ -241,6 +381,7 @@ func show_phase(phase: String) -> void:
 		touch_handbrake = false
 		touch_nitro_queued = false
 	if phase == "dying" or phase == "gameover" or phase == "title":
+		_throttle_pad.release()
 		set_threats([], 0.0)
 		clear_enemy_indicators()
 
@@ -300,6 +441,7 @@ func set_nitro(tanks: int, max_tanks: int, fill: float, burning: bool) -> void:
 			var pip := ColorRect.new()
 			pip.custom_minimum_size = Vector2(10.0, 14.0)
 			pip.color = Color(0.168, 0.114, 0.102, 0.85)
+			pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			_nitro_tanks_box.add_child(pip)
 			_nitro_pips.append(pip)
 	for i in _nitro_pips.size():
@@ -752,6 +894,13 @@ func _build_playing_hud() -> void:
 	_hud_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_hud_layer)
 
+	_throttle_pad = ThrottlePad.new()
+	_throttle_pad.name = "ThrottlePad"
+	_throttle_pad.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	_throttle_pad.anchor_right = 0.5
+	_throttle_pad.end_stop_reached.connect(func() -> void: throttle_stop_reached.emit())
+	_hud_layer.add_child(_throttle_pad)
+
 	# Approaching off-screen enemy arrows behind major threat markers and HUD controls
 	_enemy_arrows = EnemyArrowsOverlay.new()
 	_enemy_arrows.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -891,7 +1040,7 @@ func _build_playing_hud() -> void:
 
 	_build_gyro_drawer(top_right, gyro_btn)
 
-	# Bottom-left: Brake/Rev touch pad + Gauges cleanly beside it (thumb-friendly!)
+	# Bottom-left: Brake touch pad + Gauges cleanly beside it (thumb-friendly!)
 	var bl_row := HBoxContainer.new()
 	bl_row.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	bl_row.offset_left = 44.0
@@ -909,11 +1058,9 @@ func _build_playing_hud() -> void:
 	left_pad_col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bl_row.add_child(left_pad_col)
 
-	_auto_gas_btn = _make_pill_button("AUTO GAS: ON", Palette.INK, Palette.REPAIR)
-	_auto_gas_btn.pressed.connect(_toggle_auto_gas)
-	left_pad_col.add_child(_auto_gas_btn)
+	left_pad_col.add_child(_make_caption("SWIPE ↑ GAS\nSWIPE ↓ REVERSE"))
 
-	var brake_btn := _make_thumb_button("BRAKE\nREV", Color(0.168, 0.114, 0.102, 0.72), Palette.PAPER)
+	var brake_btn := _make_thumb_button("BRAKE", Color(0.168, 0.114, 0.102, 0.72), Palette.PAPER)
 	brake_btn.button_down.connect(func() -> void: touch_brake = true)
 	brake_btn.button_up.connect(func() -> void: touch_brake = false)
 	left_pad_col.add_child(brake_btn)
@@ -1035,11 +1182,7 @@ func _build_gyro_drawer(holder: VBoxContainer, toggle_btn: Button) -> void:
 	list.add_theme_constant_override("separation", 5)
 	_tuning_panel.add_child(list)
 
-	_gyro_btn = _make_pill_button(
-		"Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF"),
-		Color("#3c2823"),
-		Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER,
-	)
+	_gyro_btn = _make_pill_button("Gyro Steer: ON", Color("#3c2823"), Palette.SCRAP)
 	_gyro_btn.pressed.connect(_toggle_gyro)
 	list.add_child(_gyro_btn)
 
@@ -1122,8 +1265,8 @@ func _build_title_screen() -> void:
 
 	controls_row.add_child(_make_control_card("IPHONE · GYRO & TOUCH", [
 		["TILT PHONE", "Steer (horizon stays level)"],
-		["AUTO GAS", "Hands-free throttle"],
-		["BRAKE / REV", "Left thumb"],
+		["SWIPE LEFT SIDE", "Up: gas · down: reverse · hold"],
+		["BRAKE", "Left thumb"],
 		["DRIFT · NITRO", "Right thumb"],
 	]))
 	controls_row.add_child(_make_control_card("KEYBOARD · CONTROLLER", [
@@ -1156,6 +1299,7 @@ func _build_levelup_screen() -> void:
 	center.alignment = BoxContainer.ALIGNMENT_CENTER
 	center.add_theme_constant_override("separation", 16)
 	_levelup_screen.add_child(center)
+	_levelup_box = center
 
 	var eyebrow := Label.new()
 	eyebrow.text = "SCRAP WELDED"
@@ -1350,14 +1494,14 @@ func _add_threat_marker() -> ThreatMarker:
 
 func _toggle_gyro() -> void:
 	_stabilizer.gyro_enabled = not _stabilizer.gyro_enabled
-	_gyro_btn.text = "Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF")
-	_gyro_btn.add_theme_color_override("font_color", Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER)
+	_stabilizer.gyro_user_set = true
+	sync_gyro_settings()
 
 
 func _cycle_lock() -> void:
-	_lock_idx = (_lock_idx + 1) % LOCK_MODES.size()
-	_stabilizer.counter_rotate_scale = LOCK_MODES[_lock_idx]
-	_lock_btn.text = "Screen Lock: " + LOCK_LABELS[_lock_idx]
+	_stabilizer.counter_rotate_scale = LOCK_MODES[(_lock_idx + 1) % LOCK_MODES.size()]
+	_stabilizer.counter_rotate_user_set = true
+	sync_gyro_settings()
 
 
 static func _find_lock_idx(scale: float) -> int:
@@ -1397,12 +1541,6 @@ func _toggle_horizon() -> void:
 func _toggle_invert() -> void:
 	_stabilizer.invert_gyro = not _stabilizer.invert_gyro
 	_invert_btn.text = "Invert Roll: " + ("ON" if _stabilizer.invert_gyro else "OFF")
-
-
-func _toggle_auto_gas() -> void:
-	auto_throttle = not auto_throttle
-	_auto_gas_btn.text = "AUTO GAS: " + ("ON" if auto_throttle else "OFF")
-	_auto_gas_btn.add_theme_color_override("font_color", Palette.REPAIR if auto_throttle else Palette.CAR_STRIPE_ALT)
 
 
 static func _format_time(seconds: float) -> String:

@@ -97,14 +97,14 @@ func get_drift_angle() -> float:
 	return atan2(lateral_speed, absf(forward_speed) + 0.5)
 
 
-func step(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float) -> void:
+func step(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_stop: float) -> void:
 	_leftover += minf(dt, 0.05)
 	while _leftover >= SUBSTEP:
-		_substep(SUBSTEP, in_throttle, in_brake, in_steer, in_handbrake, in_boost)
+		_substep(SUBSTEP, in_throttle, in_brake, in_steer, in_handbrake, in_boost, in_stop)
 		_leftover -= SUBSTEP
 
 
-func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float) -> void:
+func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_stop: float) -> void:
 	var fx := sin(heading)
 	var fz := cos(heading)
 	var rx := fz
@@ -136,7 +136,7 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 	var speed_limit := top_speed * (1.0 + NITROUS_TOP_SPEED * boost)
 	var ratio := v_f / speed_limit
 	var headroom := maxf(0.0, 1.0 - ratio * ratio) if v_f > 0.0 else 1.0
-	var reversing := in_brake > 0.0 and throttle <= 0.0 and v_f < 1.5
+	var reversing := in_brake > 0.0 and in_stop <= 0.0 and throttle <= 0.0 and v_f < 1.5
 	var engine := 0.0
 	var brake := 0.0
 	if reversing:
@@ -144,7 +144,7 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 		engine = -in_brake * engine_accel * 0.6 * _saturate(1.0 + v_f / reverse_limit)
 	else:
 		engine = throttle * engine_accel * headroom
-		brake = in_brake
+		brake = maxf(in_brake, in_stop)
 	if in_handbrake:
 		engine = 0.0
 

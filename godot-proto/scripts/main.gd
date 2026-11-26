@@ -59,6 +59,7 @@ const NITROUS_SHAKE := 0.32
 const NITROUS_LOOK_AHEAD := 0.12
 const NITROUS_FLAME_PUFFS_PER_SECOND := 36.0
 const LEVEL_UP_PICK_GUARD := 0.55
+const THROTTLE_STOP_HAPTIC_MS := 12
 
 
 class PendingBlast:
@@ -216,7 +217,7 @@ func _ready() -> void:
 	add_child(_car_model)
 	_car_model.build(shared_mat)
 
-	_stabilizer.apply_screen_defaults()
+	_stabilizer.apply_defaults(_controller_connected())
 
 	_hud = GameHud.new()
 	_hud.name = "GameHud"
@@ -229,6 +230,8 @@ func _ready() -> void:
 	_hud.mute_pressed.connect(_toggle_mute)
 	_hud.recenter_pressed.connect(func() -> void: _stabilizer.recenter())
 	_hud.upgrade_picked.connect(_apply_upgrade)
+	_hud.throttle_stop_reached.connect(func() -> void: _haptic(THROTTLE_STOP_HAPTIC_MS))
+	Input.joy_connection_changed.connect(_on_joy_connection_changed)
 
 	_cb_player_hit = Callable(self, "_hurt_player")
 	_cb_wreck = Callable(self, "_on_enemy_wrecked")
@@ -296,6 +299,7 @@ func _process(delta: float) -> void:
 			_simulate(dt)
 		"levelup":
 			_pick_guard = maxf(0.0, _pick_guard - dt)
+			_track_horizon(dt)
 		"paused":
 			pass
 		"dying":
@@ -318,8 +322,22 @@ func _process(delta: float) -> void:
 	_hud.set_rush(_nitro_view if driving else 0.0)
 
 
+func _controller_connected() -> bool:
+	return not Input.get_connected_joypads().is_empty()
+
+
+func _on_joy_connection_changed(_device: int, _connected: bool) -> void:
+	_stabilizer.apply_defaults(_controller_connected())
+	_hud.sync_gyro_settings()
+
+
+func _track_horizon(dt: float) -> void:
+	_stabilizer.update(dt, false, false, Input.is_key_pressed(KEY_Q), false)
+	_aim_camera()
+
+
 func _poll_gamepad_menus() -> void:
-	if Input.get_connected_joypads().is_empty():
+	if not _controller_connected():
 		return
 	var pad_confirm := Input.is_joy_button_pressed(0, JOY_BUTTON_A)
 	var pad_pause := Input.is_joy_button_pressed(0, JOY_BUTTON_START)
@@ -458,7 +476,7 @@ func _simulate(dt: float) -> void:
 	var key_handbrake := Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_SHIFT)
 	var key_nitro := Input.is_key_pressed(KEY_E) or Input.is_key_pressed(KEY_N) or Input.is_key_pressed(KEY_F)
 
-	var pad_connected := not Input.get_connected_joypads().is_empty()
+	var pad_connected := _controller_connected()
 	var pad_steer := 0.0
 	var pad_throttle := 0.0
 	var pad_brake := 0.0
@@ -484,11 +502,15 @@ func _simulate(dt: float) -> void:
 			steer = key_steer
 		else:
 			steer = _stabilizer.steer_output
-	var brake := maxf(pad_brake, 1.0 if (_hud.touch_brake or key_brake) else 0.0)
+	var touch_drive := _hud.touch_drive()
+	var stop := 1.0 if _hud.touch_brake else 0.0
+	var brake := maxf(maxf(pad_brake, 1.0 if key_brake else 0.0), maxf(0.0, -touch_drive))
 	var handbrake := _hud.touch_handbrake or key_handbrake or pad_handbrake
 	var throttle := pad_throttle
-	if brake <= 0.0 and (_hud.auto_throttle or key_throttle):
-		throttle = maxf(throttle, 1.0)
+	if stop <= 0.0:
+		throttle = maxf(throttle, maxf(0.0, touch_drive))
+		if brake <= 0.0 and key_throttle:
+			throttle = 1.0
 
 	var nitro_pressed_now := key_nitro or pad_nitro
 	var nitro_trigger := (nitro_pressed_now and not _prev_nitro_key) or _hud.consume_touch_nitro()
@@ -498,7 +520,7 @@ func _simulate(dt: float) -> void:
 	_last_handbrake = handbrake
 	_last_throttle = throttle
 
-	_car.step(dt, throttle, brake, steer, handbrake, boost)
+	_car.step(dt, throttle, brake, steer, handbrake, boost, stop)
 	_collide_car_with_world()
 	_world.update_around(_car.x, _car.z)
 
@@ -1080,6 +1102,10 @@ func _update_camera(dt: float) -> void:
 
 	_camera.fov = CAMERA_FOV_DEG + NITROUS_FOV_DEG * _nitro_view + NITROUS_FOV_KICK_DEG * _nitro_kick * _nitro_kick
 	_camera.position = _cam_target + _cam_dir * distance + shake_vec
+	_aim_camera()
+
+
+func _aim_camera() -> void:
 	_camera.look_at(_cam_target, Vector3.UP)
 	# Counter-rotate the 3D camera around its view axis so the desert stays level with gravity
 	_camera.rotate_object_local(Vector3.BACK, -_stabilizer.display_roll)
