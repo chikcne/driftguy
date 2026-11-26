@@ -351,7 +351,7 @@ func set_loadout(levels: Dictionary) -> void:
 	for child in _loadout_grid.get_children():
 		child.queue_free()
 	for u in Upgrades.all_upgrades():
-		var lv: int = levels[u.id]
+		var lv: int = int(levels.get(u.id, 0))
 		if lv <= 0:
 			continue
 		var accent: Color = Upgrades.CATEGORY_COLORS[u.category]
@@ -602,7 +602,8 @@ func open_level_up(choices: Array[Upgrades.UpgradeDef], levels: Dictionary) -> v
 
 	for i in choices.size():
 		var u := choices[i]
-		var next_lv: int = levels[u.id] + 1
+		var next_lv: int = int(levels.get(u.id, 0)) + 1
+		var is_rare := u.rarity == Upgrades.RARITY_RARE
 		var accent: Color = Upgrades.CATEGORY_COLORS[u.category]
 		var card := Button.new()
 		card.focus_mode = Control.FOCUS_NONE
@@ -634,10 +635,11 @@ func open_level_up(choices: Array[Upgrades.UpgradeDef], levels: Dictionary) -> v
 		vbox.add_child(glyph_lbl)
 
 		var cat_lbl := Label.new()
-		cat_lbl.text = Upgrades.CATEGORY_LABELS[u.category]
+		var base_cat: String = Upgrades.CATEGORY_LABELS[u.category]
+		cat_lbl.text = ("★ RARE · %s" % base_cat) if is_rare else base_cat
 		cat_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		cat_lbl.add_theme_font_size_override("font_size", 11)
-		cat_lbl.add_theme_color_override("font_color", accent)
+		cat_lbl.add_theme_color_override("font_color", Palette.SCRAP if is_rare else accent)
 		vbox.add_child(cat_lbl)
 
 		var name_lbl := Label.new()

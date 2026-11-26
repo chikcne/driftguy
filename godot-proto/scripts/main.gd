@@ -144,6 +144,10 @@ var _cb_scrape: Callable
 var _cb_kill: Callable
 var _cb_collect: Callable
 var _cb_shot: Callable
+var _cb_explode: Callable
+var _cb_mine_drop: Callable
+var _cb_grenade_toss: Callable
+var _cb_grenade_kick: Callable
 var _cb_throw_pipe: Callable
 var _cb_pipe_hit: Callable
 var _cb_akira: Callable
@@ -233,6 +237,10 @@ func _ready() -> void:
 	_cb_kill = Callable(self, "_on_enemy_killed")
 	_cb_collect = Callable(self, "_collect")
 	_cb_shot = Callable(_audio, "shot")
+	_cb_explode = Callable(self, "_detonate")
+	_cb_mine_drop = Callable(_audio, "mine_drop")
+	_cb_grenade_toss = Callable(_audio, "grenade_toss")
+	_cb_grenade_kick = Callable(self, "_on_grenade_kick")
 	_cb_throw_pipe = Callable(_gibs, "throw_pipe")
 	_cb_pipe_hit = Callable(self, "_on_pipe_hit")
 	_cb_akira = Callable(self, "_on_enemy_akira")
@@ -413,9 +421,9 @@ func _reset_run() -> void:
 	_remember_wheels()
 
 	_car_model.visible = true
-	_car_model.sync_attachments(false, false, false)
+	_car_model.sync_attachments(false, false, false, false, false)
 	_hud.set_loadout(_levels)
-	_hud.set_nitro(_nitro_tanks, NITROUS_MAX_TANKS, 0.0, false)
+	_hud.set_nitro(_nitro_tanks, _stats.nitro_max_tanks, 0.0, false)
 	_hud.set_frame(_hp, _stats.max_hp, 0.0, _level, 0.0, 0, 0.0, 0.0, Engine.get_frames_per_second())
 
 
@@ -516,6 +524,18 @@ func _simulate(dt: float) -> void:
 	)
 	_world.step_world(dt, _car.x, _car.z)
 	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot)
+	_combat.update_explosives(
+		dt,
+		_car,
+		_stats,
+		_enemies,
+		_world,
+		_smoke,
+		_cb_explode,
+		_cb_mine_drop,
+		_cb_grenade_toss,
+		_cb_grenade_kick,
+	)
 	_enemies.sweep_dead(_cb_wreck, _cb_kill)
 	_update_blasts(dt)
 	_gather_nitrous()
@@ -549,11 +569,11 @@ func _simulate(dt: float) -> void:
 	var nitro_fill := 0.0
 	if _nitro_burn > 0.0:
 		nitro_fill = _nitro_burn / NITROUS_SECONDS
-	elif _nitro_tanks >= NITROUS_MAX_TANKS:
+	elif _nitro_tanks >= _stats.nitro_max_tanks:
 		nitro_fill = 1.0
 	else:
 		nitro_fill = _nitro_harm / NITROUS_HARM_PER_TANK
-	_hud.set_nitro(_nitro_tanks, NITROUS_MAX_TANKS, nitro_fill, _nitro_burn > 0.0)
+	_hud.set_nitro(_nitro_tanks, _stats.nitro_max_tanks, nitro_fill, _nitro_burn > 0.0)
 
 	if _hp <= 0.0:
 		_die()
@@ -561,7 +581,7 @@ func _simulate(dt: float) -> void:
 		_scrap -= needed
 		_level += 1
 		_audio.level_up()
-		_hud.open_level_up(Upgrades.roll_choices(_levels, 3), _levels)
+		_hud.open_level_up(Upgrades.roll_choices(_levels, 3, _level), _levels)
 		_pick_guard = LEVEL_UP_PICK_GUARD
 		_set_phase("levelup")
 
@@ -599,16 +619,16 @@ func _ignite_nitrous() -> void:
 
 
 func _gather_nitrous() -> void:
-	var harm := _enemies.take_harm_dealt()
-	if _nitro_tanks >= NITROUS_MAX_TANKS:
+	var harm := _enemies.take_harm_dealt() * _stats.nitro_charge_scale
+	if _nitro_tanks >= _stats.nitro_max_tanks:
 		_nitro_harm = 0.0
 		return
 	_nitro_harm += harm
-	while _nitro_harm >= NITROUS_HARM_PER_TANK and _nitro_tanks < NITROUS_MAX_TANKS:
+	while _nitro_harm >= NITROUS_HARM_PER_TANK and _nitro_tanks < _stats.nitro_max_tanks:
 		_nitro_harm -= NITROUS_HARM_PER_TANK
 		_nitro_tanks += 1
 		_audio.nitro_ready()
-	if _nitro_tanks >= NITROUS_MAX_TANKS:
+	if _nitro_tanks >= _stats.nitro_max_tanks:
 		_nitro_harm = 0.0
 
 
@@ -822,6 +842,11 @@ func _on_enemy_scrape(enemy: EnemySystem.Enemy) -> void:
 	_gibs.sparks(sx, DesertTerrain.ground_height(sx, sz) + 0.2, sz, 2, 7.0, enemy.vx, enemy.vz)
 
 
+func _on_grenade_kick(gx: float, gy: float, gz: float, gvx: float, gvz: float) -> void:
+	_gibs.sparks(gx, gy, gz, 3, 9.0, gvx * 0.4, gvz * 0.4)
+	_audio.crunch(0.28, _loudness_at(gx, gz))
+
+
 func _on_enemy_akira(enemy: EnemySystem.Enemy) -> void:
 	_audio.screech(enemy.akira_duration, 0.14, _loudness_at(enemy.x, enemy.z) * 0.45)
 
@@ -955,7 +980,13 @@ func _apply_upgrade(upgrade: Upgrades.UpgradeDef) -> void:
 	if Upgrades.HEAL_ON_PICK.has(upgrade.id):
 		_hp = minf(_stats.max_hp, _hp + float(Upgrades.HEAL_ON_PICK[upgrade.id]))
 	_invulnerable = LEVEL_UP_GRACE
-	_car_model.sync_attachments(_levels["gun"] > 0, _levels["fan"] > 0, _levels["ram"] > 0)
+	_car_model.sync_attachments(
+		int(_levels.get("gun", 0)) > 0,
+		int(_levels.get("fan", 0)) > 0,
+		int(_levels.get("ram", 0)) > 0,
+		int(_levels.get("mines", 0)) > 0,
+		int(_levels.get("grenades", 0)) > 0,
+	)
 	_hud.set_loadout(_levels)
 	_set_phase("playing")
 

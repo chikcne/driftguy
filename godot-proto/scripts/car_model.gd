@@ -15,6 +15,8 @@ var lean: Node3D
 var gun: MeshInstance3D
 var fan: MeshInstance3D
 var plow: MeshInstance3D
+var mine_chute: MeshInstance3D
+var grenade_rack: MeshInstance3D
 var steer_pivots: Array[Node3D] = []
 var wheels: Array[MeshInstance3D] = []
 var _flames: Array[Node3D] = []
@@ -94,13 +96,37 @@ func build(shared_material: StandardMaterial3D) -> void:
 	plow.visible = false
 	lean.add_child(plow)
 
+	mine_chute = MeshInstance3D.new()
+	mine_chute.name = "MineChute"
+	mine_chute.mesh = _build_mine_chute_mesh()
+	mine_chute.material_override = _material
+	mine_chute.position = Vector3(0.0, 0.42, 2.28) # sim z = -2.28 -> godot z = +2.28
+	mine_chute.visible = false
+	lean.add_child(mine_chute)
+
+	grenade_rack = MeshInstance3D.new()
+	grenade_rack.name = "GrenadeRack"
+	grenade_rack.mesh = _build_grenade_rack_mesh()
+	grenade_rack.material_override = _material
+	grenade_rack.position = Vector3(0.0, 1.02, 1.55) # sim z = -1.55 -> godot z = +1.55
+	grenade_rack.visible = false
+	lean.add_child(grenade_rack)
+
 	_build_exhaust_flames()
 
 
-func sync_attachments(has_gun: bool, has_fan: bool, has_plow: bool) -> void:
+func sync_attachments(
+	has_gun: bool,
+	has_fan: bool,
+	has_plow: bool,
+	has_mines: bool = false,
+	has_grenades: bool = false,
+) -> void:
 	gun.visible = has_gun
 	fan.visible = has_fan
 	plow.visible = has_plow
+	mine_chute.visible = has_mines
+	grenade_rack.visible = has_grenades
 
 
 func update_visuals(
@@ -228,6 +254,25 @@ func _build_plow_mesh() -> ArrayMesh:
 		.box(Vector3(0.16, 0.5, 0.5), Vector3(0.0, 0.05, 0.38), Palette.RAIDER_YELLOW) \
 		.cylinder(0.0, 0.18, 0.5, 5, Vector3(0.6, 0.1, 0.42), Palette.METAL_DARK, Vector3(HALF_PI, 0.0, 0.0)) \
 		.cylinder(0.0, 0.18, 0.5, 5, Vector3(-0.6, 0.1, 0.42), Palette.METAL_DARK, Vector3(HALF_PI, 0.0, 0.0)) \
+		.build()
+
+
+func _build_mine_chute_mesh() -> ArrayMesh:
+	var kit := ModelKit.new()
+	return kit \
+		.box(Vector3(0.95, 0.24, 0.52), Vector3(0.0, 0.0, -0.14), Palette.METAL_DARK) \
+		.box(Vector3(0.76, 0.08, 0.42), Vector3(0.0, 0.14, -0.12), Palette.RAIDER_YELLOW) \
+		.box(Vector3(0.14, 0.28, 0.18), Vector3(0.46, 0.02, -0.22), Palette.METAL) \
+		.box(Vector3(0.14, 0.28, 0.18), Vector3(-0.46, 0.02, -0.22), Palette.METAL) \
+		.build()
+
+
+func _build_grenade_rack_mesh() -> ArrayMesh:
+	var kit := ModelKit.new()
+	return kit \
+		.cylinder(0.24, 0.26, 0.65, 7, Vector3(0.68, 0.12, -0.15), Palette.CACTUS_DARK, Vector3(0.65, 0.0, 0.0)) \
+		.cylinder(0.24, 0.26, 0.65, 7, Vector3(-0.68, 0.12, -0.15), Palette.CACTUS_DARK, Vector3(0.65, 0.0, 0.0)) \
+		.box(Vector3(1.48, 0.12, 0.18), Vector3(0.0, -0.02, 0.0), Palette.METAL_DARK) \
 		.build()
 
 

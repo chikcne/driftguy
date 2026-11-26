@@ -745,11 +745,11 @@ func update_enemies(
 			enemy.blind_timer = BLINDED_LINGER
 			var share := cloud.total * KIND_SHARE_THRESHOLD
 			if cloud.by_kind[SmokeSystem.PUFF_ASH] > share:
-				enemy.slow_timer = ASH_LINGER
+				enemy.slow_timer = ASH_LINGER * stats.compound_linger_scale
 			if cloud.by_kind[SmokeSystem.PUFF_EMBER] > share:
-				enemy.ember_timer = EMBER_LINGER
+				enemy.ember_timer = EMBER_LINGER * stats.compound_linger_scale
 			if cloud.by_kind[SmokeSystem.PUFF_TOXIC] > share:
-				enemy.toxic_timer = TOXIC_LINGER
+				enemy.toxic_timer = TOXIC_LINGER * stats.compound_linger_scale
 		if enemy.toxic_timer > 0.0:
 			hurt(enemy, stats.toxic_dps * dt)
 		if enemy.blind_timer > 0.0:

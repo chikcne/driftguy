@@ -3,12 +3,12 @@ extends Node3D
 
 # Direct port of src/effects.ts BlastPool and ShockRings.
 
-const BLAST_POOL := 12
+const BLAST_POOL := 24
 const BLAST_SECONDS := 0.38
 const BLAST_HOT := Color(1.0, 0.9, 0.6)
 const BLAST_COOL := Color(1.0, 0.35, 0.12)
 
-const RING_POOL := 6
+const RING_POOL := 12
 const RING_SECONDS := 0.5
 const RING_LIFT := 0.7
 

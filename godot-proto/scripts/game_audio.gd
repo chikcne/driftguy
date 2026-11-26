@@ -136,6 +136,14 @@ func shot() -> void:
 	_play_sfx("shot", 0.14, randf_range(0.92, 1.08), "Master")
 
 
+func mine_drop() -> void:
+	_play_sfx("mine_drop", 0.24, randf_range(0.94, 1.06), "Master")
+
+
+func grenade_toss() -> void:
+	_play_sfx("grenade_toss", 0.22, randf_range(0.92, 1.1), "Master")
+
+
 func pickup(pitch_step: float) -> void:
 	var scale := (660.0 + pitch_step * 40.0) / 660.0
 	_play_sfx("pickup", 0.16, scale, "Master")
@@ -361,6 +369,19 @@ func _generate_all_streams() -> void:
 		[196.0, 0.4, 0.14, 0.65, 1],
 		[196.0, 0.6, 0.16, 0.65, 1],
 	]), false)
+
+	# 16. Mine drop: metallic latch clunk + arming chirp
+	var md_buf := _zero_buf(0.18)
+	_mix_sine_drop(md_buf, 0.0, 0.09, 260.0, 95.0, 0.55)
+	_mix_clatter(md_buf, 0.0, 2, 0.05, 0.18, rng)
+	_mix_notes_into(md_buf, [[880.0, 0.05, 0.08, 0.35, 3]])
+	_streams["mine_drop"] = _make_wav(md_buf, false)
+
+	# 17. Grenade toss: hollow pneumatic pop/thump
+	var gt_buf := _zero_buf(0.16)
+	_mix_sine_drop(gt_buf, 0.0, 0.10, 320.0, 110.0, 0.6)
+	_mix_sweep(gt_buf, 0.0, 0.11, 1400.0, 320.0, 0.35, false, rng)
+	_streams["grenade_toss"] = _make_wav(gt_buf, false)
 
 
 static func _zero_buf(seconds: float) -> PackedFloat32Array:

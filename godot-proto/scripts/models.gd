@@ -172,6 +172,37 @@ static func build_bullet_model() -> ArrayMesh:
 		.build()
 
 
+static func build_mine_model() -> ArrayMesh:
+	return ModelKit.new() \
+		.cylinder(1.15, 1.32, 0.24, 8, Vector3(0.0, 0.12, 0.0), Palette.METAL_DARK) \
+		.cylinder(0.86, 0.96, 0.12, 8, Vector3(0.0, 0.28, 0.0), Palette.METAL) \
+		.box(Vector3(0.95, 0.06, 0.18), Vector3(0.0, 0.34, 0.0), Palette.RAIDER_YELLOW) \
+		.box(Vector3(0.18, 0.06, 0.95), Vector3(0.0, 0.34, 0.0), Palette.RAIDER_YELLOW) \
+		.build()
+
+
+static func build_mine_beacon_model() -> ArrayMesh:
+	return ModelKit.new() \
+		.cylinder(0.32, 0.38, 0.14, 8, Vector3(0.0, 0.42, 0.0), Color.WHITE) \
+		.build()
+
+
+static func build_grenade_model() -> ArrayMesh:
+	return ModelKit.new() \
+		.cylinder(0.56, 0.56, 0.72, 8, Vector3.ZERO, Palette.CACTUS_DARK) \
+		.cylinder(0.62, 0.62, 0.16, 8, Vector3(0.0, 0.14, 0.0), Palette.METAL_DARK) \
+		.cylinder(0.62, 0.62, 0.16, 8, Vector3(0.0, -0.14, 0.0), Palette.METAL_DARK) \
+		.cylinder(0.26, 0.32, 0.22, 6, Vector3(0.0, 0.44, 0.0), Palette.RAIDER_YELLOW) \
+		.box(Vector3(0.10, 0.48, 0.16), Vector3(0.28, 0.18, 0.0), Palette.METAL) \
+		.build()
+
+
+static func build_grenade_spark_model() -> ArrayMesh:
+	return ModelKit.new() \
+		.blob(0.22, Vector3(0.0, 0.58, 0.0), Color.WHITE, Vector3.ONE, 0.08) \
+		.build()
+
+
 static func build_gib_models() -> Dictionary:
 	var kit := ModelKit.new()
 	var white := Color.WHITE
