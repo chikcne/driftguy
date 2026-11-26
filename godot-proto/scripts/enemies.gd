@@ -127,6 +127,16 @@ const AKIRA_DUST_INTERVAL := 0.045
 const AKIRA_SPARK_INTERVAL := 0.065
 const AKIRA_ABORT_SPEED := 4.5
 
+# Broadphase grid over `active`, so separation, wreck bumps, bullets, mines and
+# grenades look only at nearby enemies instead of every enemy. The 512 m window
+# is centred on the player; anything beyond it lands in the border cells and is
+# still found. Queries widen by GRID_SLACK because enemies get nudged a little
+# between a rebuild and the lookups that follow it.
+const GRID_CELL := 4.0
+const GRID_SPAN := 128
+const GRID_HALF := 64
+const GRID_SLACK := 2.0
+
 
 class EnemySpec:
 	extends RefCounted
@@ -248,6 +258,7 @@ class Enemy:
 	var track_times: PackedFloat32Array = PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
 	var track_intensities: PackedFloat32Array = PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
 	var track_active: PackedByteArray = PackedByteArray([0, 0, 0, 0])
+	var track_any: bool = false # some slot in track_active may be set
 
 
 class Threat:
@@ -570,6 +581,19 @@ var _contact := World.Contact.new()
 var _avoid := World.AvoidanceResult.new()
 var _shove := LooseSystem.ShoveResult.new()
 var _harm_dealt := 0.0
+var _grid_head := PackedInt32Array()
+var _grid_next := PackedInt32Array()
+var _grid_ox := -GRID_HALF
+var _grid_oz := -GRID_HALF
+var _grid_valid := false
+var _grid_max_radius := 0.0
+var _near := PackedInt32Array()
+# Positions, radii and masses copied out of `active` for the separation pass,
+# which reads them far more often than once per enemy.
+var _sep_x := PackedFloat64Array()
+var _sep_z := PackedFloat64Array()
+var _sep_r := PackedFloat64Array()
+var _sep_m := PackedFloat64Array()
 
 
 func setup(base_material: StandardMaterial3D) -> void:
@@ -611,6 +635,7 @@ func clear() -> void:
 	active.clear()
 	wrecks.clear()
 	_harm_dealt = 0.0
+	_grid_valid = false
 	render_all(0.0)
 
 
@@ -648,6 +673,7 @@ func spawn(kind: String, x: float, z: float, hp_scale: float, facing: float) -> 
 	e.sway_phase = randf() * TAU
 	e.sway_rate = randf_range(SWAY_RATE_MIN, SWAY_RATE_MAX)
 	active.append(e)
+	_grid_valid = false
 	return e
 
 
@@ -669,6 +695,65 @@ func hurt_area(x: float, z: float, radius: float, damage: float) -> void:
 		enemy.knock_z = (dz / dist) * knock
 
 
+func _rebuild_grid(center_x: float, center_z: float) -> void:
+	if _grid_head.is_empty():
+		_grid_head.resize(GRID_SPAN * GRID_SPAN)
+		_grid_next.resize(MAX_ENEMIES)
+	_grid_head.fill(-1)
+	_grid_ox = int(floor(center_x / GRID_CELL)) - GRID_HALF
+	_grid_oz = int(floor(center_z / GRID_CELL)) - GRID_HALF
+	_grid_max_radius = 0.0
+	for i in active.size():
+		var enemy := active[i]
+		var gx := clampi(int(floor(enemy.x / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+		var gz := clampi(int(floor(enemy.z / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+		var cell := gz * GRID_SPAN + gx
+		_grid_next[i] = _grid_head[cell]
+		_grid_head[cell] = i
+		var radius := enemy.spec.radius
+		if radius > _grid_max_radius:
+			_grid_max_radius = radius
+	_grid_valid = true
+
+
+func _gather_near(x: float, z: float, reach: float) -> void:
+	# Fills _near with the indices of every active enemy binned within `reach`
+	# of the point, lowest index first.
+	_near.clear()
+	var pad := reach + GRID_SLACK
+	var min_x := clampi(int(floor((x - pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+	var max_x := clampi(int(floor((x + pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+	var min_z := clampi(int(floor((z - pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+	var max_z := clampi(int(floor((z + pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
+		for gx in range(min_x, max_x + 1):
+			var index := _grid_head[row + gx]
+			while index >= 0:
+				_near.append(index)
+				index = _grid_next[index]
+	if _near.size() > 1:
+		_near.sort()
+
+
+func first_within(x: float, z: float, pad: float) -> Enemy:
+	# The first enemy in `active` whose body circle, grown by `pad`, covers the
+	# point. Same enemy a front-to-back scan of `active` would pick.
+	if active.is_empty():
+		return null
+	if not _grid_valid:
+		_rebuild_grid(x, z)
+	_gather_near(x, z, pad + _grid_max_radius)
+	for index in _near:
+		var enemy := active[index]
+		var reach := enemy.spec.radius + pad
+		var dx := enemy.x - x
+		var dz := enemy.z - z
+		if dx * dx + dz * dz <= reach * reach:
+			return enemy
+	return null
+
+
 func sweep_dead(on_wreck: Callable, on_kill: Callable) -> void:
 	for i in range(active.size() - 1, -1, -1):
 		var enemy := active[i]
@@ -676,6 +761,7 @@ func sweep_dead(on_wreck: Callable, on_kill: Callable) -> void:
 			continue
 		active[i] = active[active.size() - 1]
 		active.pop_back()
+		_grid_valid = false
 		if enemy.blind_timer <= 0.0:
 			on_kill.call(enemy)
 			continue
@@ -812,8 +898,11 @@ func update_enemies(
 					0.2,
 				)
 
+	_rebuild_grid(car.x, car.z)
 	_separate()
 	sweep_dead(on_wreck, on_kill)
+	if not _grid_valid:
+		_rebuild_grid(car.x, car.z)
 	_update_wrecks(dt, car, stats, world, smoke, damage_scale, on_player_hit, on_bump, on_scrape, on_kill, tracks, track_time)
 
 
@@ -912,7 +1001,9 @@ func _update_wrecks(
 
 
 func _bump_into(wreck: Enemy, on_bump: Callable) -> void:
-	for other in active:
+	_gather_near(wreck.x, wreck.z, (wreck.spec.radius + _grid_max_radius) * 0.9)
+	for index in _near:
+		var other := active[index]
 		var reach := (wreck.spec.radius + other.spec.radius) * 0.9
 		var dx := other.x - wreck.x
 		if dx > reach or dx < -reach:
@@ -1399,16 +1490,11 @@ func _update_akira_fx(enemy: Enemy, dt: float, car: CarBody, smoke: SmokeSystem,
 
 func _update_enemy_tracks(enemy: Enemy, car: CarBody, tracks: SkidTracks, track_time: float, wrecked: bool) -> void:
 	if absf(enemy.x - car.x) > TRACK_VISIBLE_RANGE or absf(enemy.z - car.z) > TRACK_VISIBLE_RANGE:
-		enemy.track_active.fill(0)
+		_stop_enemy_tracks(enemy)
 		return
 
 	var spec := enemy.spec
 	var is_bike := spec.kind == "bike"
-	var loose := maxf(enemy.blind, enemy.reel) * spec.sway
-	var yaw := enemy.heading + (0.0 if wrecked else sin(enemy.sway_phase + 1.3) * SWAY_FISHTAIL * loose)
-	var fx := sin(yaw)
-	var fz := cos(yaw)
-
 	var spd := sqrt(enemy.vx * enemy.vx + enemy.vz * enemy.vz)
 	var side_slip := absf(enemy.vx * cos(enemy.heading) - enemy.vz * sin(enemy.heading))
 	var slip_ratio := side_slip / (spd + 1.0)
@@ -1432,8 +1518,16 @@ func _update_enemy_tracks(enemy: Enemy, car: CarBody, tracks: SkidTracks, track_
 		intensity = clampf((side_slip - ENEMY_TRACK_SLIP_SPEED) / 8.0, 0.28, 1.0)
 
 	if not drifting:
-		enemy.track_active.fill(0)
+		_stop_enemy_tracks(enemy)
 		return
+
+	# Most enemies are not sliding on any given frame, so the wheel frame is
+	# only worked out once we know there is a mark to lay.
+	var loose := maxf(enemy.blind, enemy.reel) * spec.sway
+	var yaw := enemy.heading + (0.0 if wrecked else sin(enemy.sway_phase + 1.3) * SWAY_FISHTAIL * loose)
+	var fx := sin(yaw)
+	var fz := cos(yaw)
+	enemy.track_any = true
 
 	if is_bike:
 		# Slot 0: rear wheel, Slot 1: front wheel (Akira/heavy/wreck), Slot 2: dragging boot (Akira)
@@ -1476,6 +1570,12 @@ func _update_enemy_tracks(enemy: Enemy, car: CarBody, tracks: SkidTracks, track_
 	# Front axle (marks on heavy drifts, smoke fishtails, and spinning wrecks)
 	_mark_enemy_wheel(enemy, 2, enemy.x + fx * front_z - fz * front_x, enemy.z + fz * front_z + fx * front_x, half_w * 0.88, heavy, intensity * 0.78, tracks, track_time)
 	_mark_enemy_wheel(enemy, 3, enemy.x + fx * front_z + fz * front_x, enemy.z + fz * front_z - fx * front_x, half_w * 0.88, heavy, intensity * 0.78, tracks, track_time)
+
+
+func _stop_enemy_tracks(enemy: Enemy) -> void:
+	if enemy.track_any:
+		enemy.track_active.fill(0)
+		enemy.track_any = false
 
 
 func _mark_enemy_wheel(
@@ -1858,16 +1958,53 @@ func _collide_with_car(
 
 
 func _separate() -> void:
+	# Pairs are resolved in the same order as a plain i < j double loop, since
+	# every push moves both enemies and so feeds into the pairs after it.
 	var n := active.size()
+	if n < 2:
+		return
+	_sep_x.resize(n)
+	_sep_z.resize(n)
+	_sep_r.resize(n)
+	_sep_m.resize(n)
 	for i in n:
-		var a := active[i]
-		for j in range(i + 1, n):
-			var b := active[j]
-			var reach := (a.spec.radius + b.spec.radius) * 0.9
-			var dx := b.x - a.x
+		var enemy := active[i]
+		_sep_x[i] = enemy.x
+		_sep_z[i] = enemy.z
+		_sep_r[i] = enemy.spec.radius
+		_sep_m[i] = enemy.spec.mass
+
+	var moved := false
+	for i in n - 1:
+		var ax := _sep_x[i]
+		var az := _sep_z[i]
+		var ar := _sep_r[i]
+		var pad := (ar + _grid_max_radius) * 0.9 + GRID_SLACK
+		var min_x := clampi(int(floor((ax - pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+		var max_x := clampi(int(floor((ax + pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+		var min_z := clampi(int(floor((az - pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+		var max_z := clampi(int(floor((az + pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+		_near.clear()
+		for gz in range(min_z, max_z + 1):
+			var row := gz * GRID_SPAN
+			for gx in range(min_x, max_x + 1):
+				var j := _grid_head[row + gx]
+				while j >= 0:
+					if j > i:
+						_near.append(j)
+					j = _grid_next[j]
+		if _near.is_empty():
+			continue
+		if _near.size() > 1:
+			_near.sort()
+		var am := _sep_m[i]
+		var a_moved := false
+		for j in _near:
+			var reach := (ar + _sep_r[j]) * 0.9
+			var dx := _sep_x[j] - ax
 			if dx > reach or dx < -reach:
 				continue
-			var dz := b.z - a.z
+			var dz := _sep_z[j] - az
 			var dist_sq := dx * dx + dz * dz
 			if dist_sq >= reach * reach:
 				continue
@@ -1875,10 +2012,22 @@ func _separate() -> void:
 			if dist < 0.001:
 				dist = 0.001
 			var overlap := (reach - dist) * 0.5
-			var total := a.spec.mass + b.spec.mass
+			var bm := _sep_m[j]
+			var total := am + bm
 			var nx := dx / dist
 			var nz := dz / dist
-			a.x -= nx * overlap * (b.spec.mass / total) * 2.0
-			a.z -= nz * overlap * (b.spec.mass / total) * 2.0
-			b.x += nx * overlap * (a.spec.mass / total) * 2.0
-			b.z += nz * overlap * (a.spec.mass / total) * 2.0
+			ax -= nx * overlap * (bm / total) * 2.0
+			az -= nz * overlap * (bm / total) * 2.0
+			_sep_x[j] += nx * overlap * (am / total) * 2.0
+			_sep_z[j] += nz * overlap * (am / total) * 2.0
+			a_moved = true
+		if a_moved:
+			_sep_x[i] = ax
+			_sep_z[i] = az
+			moved = true
+
+	if moved:
+		for i in n:
+			var enemy := active[i]
+			enemy.x = _sep_x[i]
+			enemy.z = _sep_z[i]

@@ -248,16 +248,11 @@ func update_gun(
 		b.z += b.vz * dt
 		var spent := b.life <= 0.0
 		if not spent:
-			for enemy in enemies.active:
-				var reach := enemy.spec.radius + BULLET_RADIUS
-				var dx := enemy.x - b.x
-				var dz := enemy.z - b.z
-				if dx * dx + dz * dz > reach * reach:
-					continue
+			var enemy := enemies.first_within(b.x, b.z, BULLET_RADIUS)
+			if enemy != null:
 				enemies.hurt(enemy, b.damage)
 				enemy.flinch = 1.0
 				spent = true
-				break
 		if spent:
 			_bullets[i] = _bullets[_bullets.size() - 1]
 			_bullets.pop_back()
@@ -321,13 +316,7 @@ func _update_mines(
 
 		var triggered := m.fuse <= 0.0
 		if not triggered:
-			for enemy in enemies.active:
-				var reach := enemy.spec.radius + MINE_TRIGGER_RADIUS
-				var dx := enemy.x - m.x
-				var dz := enemy.z - m.z
-				if dx * dx + dz * dz <= reach * reach:
-					triggered = true
-					break
+			triggered = enemies.first_within(m.x, m.z, MINE_TRIGGER_RADIUS) != null
 
 		if triggered:
 			_mines[i] = _mines[_mines.size() - 1]
@@ -452,7 +441,10 @@ func _update_grenades(
 		if g.kick_cooldown <= 0.0:
 			var gnd := DesertTerrain.ground_height(g.x, g.z)
 			if g.y <= gnd + 2.3:
-				var kicked := _try_kick_grenade_by_enemies(g, enemies.active, on_grenade_kick)
+				var kicked := false
+				var kicker := enemies.first_within(g.x, g.z, GRENADE_COLLIDE_RADIUS)
+				if kicker != null:
+					kicked = _try_kick_grenade_by_circle(g, kicker.x, kicker.z, kicker.vx, kicker.vz, kicker.spec.radius, on_grenade_kick)
 				if not kicked:
 					kicked = _try_kick_grenade_by_enemies(g, enemies.wrecks, on_grenade_kick)
 				if not kicked and g.age > GRENADE_PLAYER_GRACE:
