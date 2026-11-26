@@ -1,9 +1,9 @@
 class_name Palette
 extends RefCounted
 
-const SAND_LIGHT := Color("#f0bf85")
-const SAND_DARK := Color("#dc9763")
-const SAND_SHADOW := Color("#c97f55")
+const SAND_LIGHT := Color("#f2c893")
+const SAND_DARK := Color("#e3a873")
+const SAND_SHADOW := Color("#cf8c5f")
 const HAZE := Color("#f3c9a0")
 const ROCK_LIGHT := Color("#d08a62")
 const ROCK_MID := Color("#b5694b")

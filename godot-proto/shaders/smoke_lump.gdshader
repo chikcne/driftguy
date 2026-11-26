@@ -5,13 +5,18 @@ uniform vec3 sun_dir = vec3(0.55, 0.58, 0.46);
 uniform vec3 drift = vec3(0.0, 0.0, 0.0);
 uniform vec3 shade_tint = vec3(0.74, 0.69, 0.75);
 uniform vec3 rim_color = vec3(1.0, 0.93, 0.84);
-uniform vec3 fog_color = vec3(0.953, 0.788, 0.627);
+uniform vec3 fog_color : source_color = vec3(0.953, 0.788, 0.627);
 uniform vec2 fog_range = vec2(120.0, 320.0);
 
 varying vec3 v_world_pos;
 varying vec3 v_world_norm;
 varying vec3 v_tint;
 varying float v_glow;
+
+// Puff tints are authored as sRGB; the lighting below runs in linear space.
+vec3 srgb_to_linear(vec3 c) {
+	return mix(pow((c + vec3(0.055)) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
+}
 
 // Smooth 3D lumpy displacement for cel-shaded clustered smoke clouds
 float lump_field(vec3 p) {
@@ -39,7 +44,7 @@ void vertex() {
 	) / (2.0 * eps);
 	v_world_norm = normalize(wn - grad * 0.45);
 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	v_tint = COLOR.rgb;
+	v_tint = srgb_to_linear(COLOR.rgb);
 	v_glow = INSTANCE_CUSTOM.r;
 }
 

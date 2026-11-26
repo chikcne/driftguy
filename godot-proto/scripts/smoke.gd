@@ -153,7 +153,7 @@ func setup(fog_color: Color, fog_start: float, fog_end: float, sun_dir_godot: Ve
 	sunward.y *= 0.75
 	sunward = sunward.normalized()
 	_dense_mat.set_shader_parameter("sun_dir", sunward)
-	_dense_mat.set_shader_parameter("fog_color", Vector3(fog_color.r, fog_color.g, fog_color.b))
+	_dense_mat.set_shader_parameter("fog_color", fog_color)
 	_dense_mat.set_shader_parameter("fog_range", Vector2(fog_start, fog_end))
 
 	_dense_mm = MultiMesh.new()
@@ -183,7 +183,7 @@ func setup(fog_color: Color, fog_start: float, fog_end: float, sun_dir_godot: Ve
 	var dust_shader: Shader = load("res://shaders/smoke_dust.gdshader")
 	var dust_mat := ShaderMaterial.new()
 	dust_mat.shader = dust_shader
-	dust_mat.set_shader_parameter("fog_color", Vector3(fog_color.r, fog_color.g, fog_color.b))
+	dust_mat.set_shader_parameter("fog_color", fog_color)
 	dust_mat.set_shader_parameter("fog_range", Vector2(fog_start, fog_end))
 
 	_dust_mm = MultiMesh.new()

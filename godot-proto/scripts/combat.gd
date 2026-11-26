@@ -146,6 +146,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	var beacon_mat := StandardMaterial3D.new()
 	beacon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	beacon_mat.vertex_color_use_as_albedo = true
+	beacon_mat.vertex_color_is_srgb = true
 	beacon_mat.albedo_color = Color.WHITE
 
 	_mine_batch = SimMath.InstanceBatch.new(self, Models.build_mine_model(), shared_material, MAX_MINES, false, true, "Mines")
@@ -157,6 +158,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 
 	var scrap_mat := StandardMaterial3D.new()
 	scrap_mat.vertex_color_use_as_albedo = true
+	scrap_mat.vertex_color_is_srgb = true
 	scrap_mat.roughness = 0.85
 	scrap_mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	scrap_mat.emission_enabled = true

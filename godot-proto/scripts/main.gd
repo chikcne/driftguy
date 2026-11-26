@@ -159,6 +159,8 @@ func _ready() -> void:
 
 	var shared_mat := StandardMaterial3D.new()
 	shared_mat.vertex_color_use_as_albedo = true
+	# Palette colours are authored as sRGB; without this they render pale and washed out.
+	shared_mat.vertex_color_is_srgb = true
 	shared_mat.roughness = 0.96
 	shared_mat.metallic = 0.0
 	shared_mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
@@ -1121,8 +1123,8 @@ func _setup_environment() -> void:
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Palette.HAZE
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.86, 0.8, 0.98)
-	env.ambient_light_energy = 0.72
+	env.ambient_light_color = Color(0.8, 0.78, 1.0)
+	env.ambient_light_energy = 0.62
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
 	env.fog_light_color = Palette.HAZE
@@ -1132,7 +1134,7 @@ func _setup_environment() -> void:
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.glow_enabled = true
 	env.glow_intensity = 0.35
-	env.glow_bloom = 0.15
+	env.glow_bloom = 0.06
 
 	var world_env := WorldEnvironment.new()
 	world_env.name = "WorldEnvironment"
@@ -1141,8 +1143,8 @@ func _setup_environment() -> void:
 
 	_sun = DirectionalLight3D.new()
 	_sun.name = "Sun"
-	_sun.light_color = Color(1.0, 0.9, 0.74)
-	_sun.light_energy = 1.05
+	_sun.light_color = Color(1.0, 0.88, 0.7)
+	_sun.light_energy = 1.0
 	_sun.shadow_enabled = true
 	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	_sun.directional_shadow_max_distance = 190.0
