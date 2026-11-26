@@ -60,8 +60,8 @@ const NITROUS_SHAKE := 0.32
 const NITROUS_LOOK_AHEAD := 0.12
 const NITROUS_FLAME_PUFFS_PER_SECOND := 36.0
 const REVERSE_DASH_COOLDOWN := 2.0
-const REVERSE_DASH_POWERED_DISTANCE := 23.0 # + ~4.8m arrest skid = ~28m (~half gameplay screen)
-const REVERSE_DASH_MAX_SECONDS := 0.55
+const REVERSE_DASH_POWERED_DISTANCE := 25.4 # + ~2.6m arrest skid = ~28m (~half gameplay screen)
+const REVERSE_DASH_MAX_SECONDS := 1.25
 const LEVEL_UP_PICK_GUARD := 0.55
 const THROTTLE_STOP_HAPTIC_MS := 12
 
@@ -699,7 +699,7 @@ func _begin_reverse_dash() -> void:
 			fz * 8.0 + SimMath.rand_signed(2.2),
 			randf_range(0.6, 0.95), 1.35, randf_range(0.8, 1.3), 0.75, 0.4,
 		)
-	_shake = maxf(_shake, 0.35)
+	_shake = maxf(_shake, 0.22)
 	_audio.reverse_dash()
 	_haptic(90)
 

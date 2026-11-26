@@ -21,9 +21,9 @@ const LOCKED_REAR_FRICTION := 0.7
 const SELF_ALIGN := 1.0
 const MAX_STEER_ANGLE := 1.1
 const YAW_DAMPING := 0.9
-const REVERSE_DASH_SPEED := 52.0
-const REVERSE_DASH_ACCEL := 320.0
-const REVERSE_DASH_STOP_DECEL := 280.0
+const REVERSE_DASH_SPEED := 26.0
+const REVERSE_DASH_ACCEL := 165.0 # ~0.16s ramp from 0 to top speed
+const REVERSE_DASH_STOP_DECEL := 130.0 # ~0.20s / ~2.6m arrest skid
 const REVERSE_DASH_YAW_DAMP := 12.0
 const REVERSE_DASH_LAT_DAMP := 14.0
 const REVERSE_DASH_MOMENTUM_MIN_SPEED := 4.0
@@ -103,14 +103,12 @@ func reset() -> void:
 
 
 func start_reverse_dash() -> void:
-	# Kill all existing forward and lateral momentum so every dash is consistent.
-	var fx := sin(heading)
-	var fz := cos(heading)
-	vx = -fx * REVERSE_DASH_SPEED
-	vz = -fz * REVERSE_DASH_SPEED
+	# Kill all existing forward and lateral momentum so every dash accelerates consistently from zero.
+	vx = 0.0
+	vz = 0.0
 	yaw_rate = 0.0
-	speed = REVERSE_DASH_SPEED
-	forward_speed = -REVERSE_DASH_SPEED
+	speed = 0.0
+	forward_speed = 0.0
 	lateral_speed = 0.0
 	burnout = 0.0
 	reverse_dashing = true
@@ -154,10 +152,11 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 		speed = sqrt(vx * vx + vz * vz)
 		forward_speed = next_vf
 		lateral_speed = next_vr
-		rear_slip_speed = maxf(6.0, absf(next_vf) * 0.22)
-		front_slip_speed = maxf(4.0, absf(next_vf) * 0.14)
+		var dash_ratio := absf(next_vf) / REVERSE_DASH_SPEED
+		rear_slip_speed = maxf(3.0, absf(next_vf) * 0.32)
+		front_slip_speed = maxf(2.0, absf(next_vf) * 0.20)
 		burnout = 0.0
-		long_accel = lerpf(long_accel, -20.0, 0.06)
+		long_accel = lerpf(long_accel, -14.0 * dash_ratio, 0.12)
 		lat_accel = lerpf(lat_accel, 0.0, 0.06)
 		return
 
