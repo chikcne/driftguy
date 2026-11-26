@@ -30,7 +30,6 @@ const MAX_DUST := 600
 const GRID_CELL := 4.0
 const GRID_SPAN := 128
 const GRID_HALF := 64
-const SAMPLE_REACH_CELLS := 2
 const MAX_RADIUS := 8.0
 const SQUASH_RADIUS := 4.5
 const AIR_DRAG := 2.2
@@ -68,6 +67,7 @@ const WAVE_QUARTER := 1024
 const WAVE_SCALE := float(WAVE_SIZE) / TAU
 const DILUTION_EXPONENT := 0.8
 const FLOOR_REFRESH_MASK := 3
+const REACH_REFRESH_MASK := 31
 const NOISE_RISE := 0.35
 
 
@@ -102,6 +102,10 @@ var _grid_head := PackedInt32Array()
 var _grid_next := PackedInt32Array()
 var _grid_origin_x := 0
 var _grid_origin_z := 0
+# Upper bound on the radius any puff in the grid can have. A puff only reaches
+# a point inside its radius, so sample() looks no further out than this. Raised
+# as puffs are emitted and re-tightened every REACH_REFRESH_MASK + 1 frames.
+var _grid_reach := 0.0
 var _frame := 0
 var _drift := Vector3.ZERO
 
@@ -206,6 +210,7 @@ func setup(fog_color: Color, fog_start: float, fog_end: float, sun_dir_godot: Ve
 
 func clear() -> void:
 	count = 0
+	_grid_reach = 0.0
 	if _dense_mmi != null:
 		_dense_mm.visible_instance_count = 0
 		_dense_mmi.visible = false
@@ -256,6 +261,8 @@ func emit(
 	vigor[i] = minf(VIGOR_MAX, 0.35 + sqrt(p_vx * p_vx + p_vy * p_vy + p_vz * p_vz) * 0.12)
 	floor_y[i] = DesertTerrain.ground_height(x, z)
 	seed_arr[i] = randf()
+	if p_kind < DAMAGING_KINDS:
+		_grid_reach = maxf(_grid_reach, minf(MAX_RADIUS, p_radius + maxf(0.0, p_growth) * sqrt(p_life)))
 
 
 func update_smoke(
@@ -453,6 +460,8 @@ func update_smoke(
 				dense_count += 1
 		i -= 1
 
+	if (_frame & REACH_REFRESH_MASK) == 0:
+		_refresh_grid_reach()
 	_rebuild_grid(car_x, car_z)
 
 	_dense_mat.set_shader_parameter("drift", _drift)
@@ -463,17 +472,17 @@ func update_smoke(
 
 
 func sample(x: float, z: float, out: SmokeSample, stir_vx: float, stir_vz: float, stir_gain: float) -> SmokeSample:
-	out.total = 0.0
-	out.by_kind[0] = 0.0
-	out.by_kind[1] = 0.0
-	out.by_kind[2] = 0.0
-	out.by_kind[3] = 0.0
-	var cx := int(floor(x / GRID_CELL)) - _grid_origin_x
-	var cz := int(floor(z / GRID_CELL)) - _grid_origin_z
-	var min_x := maxi(0, cx - SAMPLE_REACH_CELLS)
-	var max_x := mini(GRID_SPAN - 1, cx + SAMPLE_REACH_CELLS)
-	var min_z := maxi(0, cz - SAMPLE_REACH_CELLS)
-	var max_z := mini(GRID_SPAN - 1, cz + SAMPLE_REACH_CELLS)
+	var by_kind := out.by_kind
+	by_kind[0] = 0.0
+	by_kind[1] = 0.0
+	by_kind[2] = 0.0
+	by_kind[3] = 0.0
+	var total := 0.0
+	var reach := _grid_reach
+	var min_x := maxi(0, int(floor((x - reach) / GRID_CELL)) - _grid_origin_x)
+	var max_x := mini(GRID_SPAN - 1, int(floor((x + reach) / GRID_CELL)) - _grid_origin_x)
+	var min_z := maxi(0, int(floor((z - reach) / GRID_CELL)) - _grid_origin_z)
+	var max_z := mini(GRID_SPAN - 1, int(floor((z + reach) / GRID_CELL)) - _grid_origin_z)
 	for gz in range(min_z, max_z + 1):
 		var row := gz * GRID_SPAN
 		for gx in range(min_x, max_x + 1):
@@ -485,8 +494,8 @@ func sample(x: float, z: float, out: SmokeSample, stir_vx: float, stir_vz: float
 				var dist_sq := dx * dx + dz * dz
 				if dist_sq < r * r:
 					var contribution := strength[idx] * (1.0 - dist_sq / (r * r))
-					out.total += contribution
-					out.by_kind[kind[idx]] += contribution
+					total += contribution
+					by_kind[kind[idx]] += contribution
 					if stir_gain > 0.0:
 						var dvx := stir_vx - vx[idx]
 						var dvz := stir_vz - vz[idx]
@@ -495,17 +504,17 @@ func sample(x: float, z: float, out: SmokeSample, stir_vx: float, stir_vz: float
 						vz[idx] += dvz * stir_gain
 						vigor[idx] = minf(VIGOR_MAX, vigor[idx] + churn * 0.12)
 				idx = _grid_next[idx]
+	out.total = total
 	return out
 
 
 func sample_density(x: float, z: float) -> float:
 	var total := 0.0
-	var cx := int(floor(x / GRID_CELL)) - _grid_origin_x
-	var cz := int(floor(z / GRID_CELL)) - _grid_origin_z
-	var min_x := maxi(0, cx - SAMPLE_REACH_CELLS)
-	var max_x := mini(GRID_SPAN - 1, cx + SAMPLE_REACH_CELLS)
-	var min_z := maxi(0, cz - SAMPLE_REACH_CELLS)
-	var max_z := mini(GRID_SPAN - 1, cz + SAMPLE_REACH_CELLS)
+	var reach := _grid_reach
+	var min_x := maxi(0, int(floor((x - reach) / GRID_CELL)) - _grid_origin_x)
+	var max_x := mini(GRID_SPAN - 1, int(floor((x + reach) / GRID_CELL)) - _grid_origin_x)
+	var min_z := maxi(0, int(floor((z - reach) / GRID_CELL)) - _grid_origin_z)
+	var max_z := mini(GRID_SPAN - 1, int(floor((z + reach) / GRID_CELL)) - _grid_origin_z)
 	for gz in range(min_z, max_z + 1):
 		var row := gz * GRID_SPAN
 		for gx in range(min_x, max_x + 1):
@@ -553,6 +562,14 @@ func shockwave(x: float, z: float, reach: float, spd: float) -> void:
 		vz[i] += (dz / dist) * kick
 		vy[i] += kick * 0.25
 		vigor[i] = VIGOR_MAX
+
+
+func _refresh_grid_reach() -> void:
+	var reach := 0.0
+	for i in count:
+		if kind[i] < DAMAGING_KINDS:
+			reach = maxf(reach, minf(MAX_RADIUS, start_radius[i] + maxf(0.0, growth[i]) * sqrt(life[i])))
+	_grid_reach = reach
 
 
 func _remove_at(i: int) -> void:

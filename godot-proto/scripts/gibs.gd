@@ -80,12 +80,17 @@ class Gib:
 	var hostile: bool = false
 	var damage: float = 0.0
 	var source_enemy: Variant = null
+	# Set by _take(): the batch this shape draws into and whether it is tinted.
+	var batch: SimMath.InstanceBatch = null
+	var tinted: bool = false
 
 
 var _pool: Array[Gib] = []
 var _batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _recipes: Dictionary = {} # String -> Array[Part]
 var _cursor := 0
+var _live := 0
+var _drawn := false # batches still hold instances from the last _render()
 
 
 static func _box(sz: Vector3, at: Vector3, col: Color) -> Part:
@@ -247,6 +252,8 @@ func setup(shared_material: StandardMaterial3D) -> void:
 func clear() -> void:
 	for g in _pool:
 		g.live = false
+	_live = 0
+	_drawn = true
 	_render()
 
 
@@ -280,8 +287,7 @@ func burst(
 		var largest := maxf(piece.size.x, maxf(piece.size.y, piece.size.z))
 		var heft := 1.0 / (0.75 + largest * 0.22)
 		var fling := randf_range(3.5, 10.0) * power * heft
-		var g := _take()
-		g.shape = piece.shape
+		var g := _take(piece.shape)
 		g.mode = MODE_AIR
 		g.x = x + off_x
 		g.y = base + oy
@@ -313,8 +319,7 @@ func burst(
 
 
 func throw_rider(x: float, z: float, heading: float, vx: float, vy: float, vz: float) -> void:
-	var g := _take()
-	g.shape = "rider"
+	var g := _take("rider")
 	g.mode = MODE_AIR
 	g.x = x
 	g.y = DesertTerrain.ground_height(x, z) + RIDER_HEIGHT
@@ -349,8 +354,7 @@ func throw_pipe(
 	damage: float,
 	source_enemy: Variant = null,
 ) -> void:
-	var g := _take()
-	g.shape = "pipe"
+	var g := _take("pipe")
 	g.mode = MODE_AIR
 	g.x = x
 	g.y = y
@@ -383,8 +387,7 @@ func sparks(x: float, y: float, z: float, count: int, spd: float, vx: float, vz:
 		var angle := randf() * TAU
 		var out := randf_range(0.3, 1.0) * spd
 		var sz := randf_range(0.12, 0.26)
-		var g := _take()
-		g.shape = "spark"
+		var g := _take("spark")
 		g.mode = MODE_AIR
 		g.x = x
 		g.y = y
@@ -409,12 +412,15 @@ func sparks(x: float, y: float, z: float, count: int, spd: float, vx: float, vz:
 
 
 func update_gibs(dt: float, smoke: SmokeSystem, car: CarBody = null, on_pipe_hit: Callable = Callable()) -> void:
+	if _live == 0 and not _drawn:
+		return
 	for g in _pool:
 		if not g.live:
 			continue
 		g.age += dt
 		if g.age >= g.life:
 			g.live = false
+			_live -= 1
 			continue
 		if g.mode == MODE_AIR:
 			var prev_x := g.x
@@ -500,10 +506,15 @@ func _check_pipe_hit_car(g: Gib, prev_x: float, prev_y: float, prev_z: float, ca
 		on_pipe_hit.call(g.source_enemy, g.damage, impact_spd, g.x, g.y, g.z)
 
 
-func _take() -> Gib:
+func _take(shape: String) -> Gib:
 	var g := _pool[_cursor]
 	_cursor = (_cursor + 1) % MAX_GIBS
+	if not g.live:
+		_live += 1
 	g.live = true
+	g.shape = shape
+	g.batch = _batches[shape]
+	g.tinted = not BAKED_SHAPES.has(shape)
 	g.hostile = false
 	g.damage = 0.0
 	g.source_enemy = null
@@ -609,10 +620,12 @@ func _render() -> void:
 	for g in _pool:
 		if not g.live:
 			continue
-		var batch: SimMath.InstanceBatch = _batches[g.shape]
+		var batch := g.batch
 		var fade := minf(1.0, (g.life - g.age) / FADE_SECONDS)
 		var sink := 0.0 if g.mode == MODE_AIR else g.clearance * (1.0 - fade)
 		batch.push(g.x, g.y - sink, g.z, g.yaw, g.pitch, g.roll, g.sx * fade, g.sy * fade, g.sz * fade)
-		batch.tint(g.color)
+		if g.tinted:
+			batch.tint(g.color)
 	for shape: String in SHAPES:
 		(_batches[shape] as SimMath.InstanceBatch).commit()
+	_drawn = _live > 0

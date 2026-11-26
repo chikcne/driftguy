@@ -10,6 +10,40 @@ const DEFAULT_LIFT := 0.065
 const DEFAULT_MIN_STEP := 0.35
 const MAX_STEP := 6.0
 
+
+
+class WindowMax:
+	extends RefCounted
+	# Largest of the most recent `window` values pushed (a monotonic queue), so
+	# the bounds of a ring buffer can be followed without rescanning it.
+	var _values := PackedFloat64Array()
+	var _stamps := PackedInt64Array()
+	var _head := 0
+
+	func clear() -> void:
+		_values.clear()
+		_stamps.clear()
+		_head = 0
+
+	func push(stamp: int, value: float, window: int) -> void:
+		var n := _values.size()
+		while n > _head and _values[n - 1] <= value:
+			n -= 1
+		_values.resize(n)
+		_stamps.resize(n)
+		_values.append(value)
+		_stamps.append(stamp)
+		while _stamps[_head] <= stamp - window:
+			_head += 1
+		if _head >= 512:
+			_values = _values.slice(_head)
+			_stamps = _stamps.slice(_head)
+			_head = 0
+
+	func top() -> float:
+		return _values[_head]
+
+
 var min_step := DEFAULT_MIN_STEP
 
 var _max_quads := DEFAULT_MAX_QUADS
@@ -21,7 +55,18 @@ var _head_times: Array[float] = []
 var _head_intensities: Array[float] = []
 var _active: Array[bool] = []
 var _cursor := 0
-var _dirty := false
+# Quads written since the last flush: a run of _dirty_count starting at
+# _dirty_from, wrapping around the ring buffer.
+var _dirty_from := 0
+var _dirty_count := 0
+# True when the GPU buffers use the plain layout flush() patches in place
+# (12 bytes of position, 8 bytes of UV per vertex).
+var _can_patch := false
+# Bounds of the quads currently in the ring: -min x/y/z, then max x/y/z.
+# Patching the buffers no longer lets the engine recompute the mesh bounds,
+# and those bounds decide how the marks sort against other translucent things.
+var _bounds: Array[WindowMax] = []
+var _written := 0
 var _time := 0.0
 var _array_mesh := ArrayMesh.new()
 var _mat: ShaderMaterial
@@ -56,6 +101,9 @@ func setup(
 		_head_intensities[i] = 1.0
 		_active[i] = false
 
+	for _i in 6:
+		_bounds.append(WindowMax.new())
+	_build_surface()
 	mesh = _array_mesh
 	extra_cull_margin = 16384.0
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -83,7 +131,11 @@ func clear_tracks() -> void:
 	for i in _active.size():
 		_active[i] = false
 	_cursor = 0
-	_dirty = true
+	_written = 0
+	for bound in _bounds:
+		bound.clear()
+	_dirty_from = 0
+	_dirty_count = _max_quads
 	flush()
 
 
@@ -171,20 +223,74 @@ func _write_quad(
 	_uvs[base + 4] = uv_end
 	_uvs[base + 5] = uv_end
 
+	_written += 1
+	_bounds[0].push(_written, -minf(minf(v0.x, v1.x), minf(v2.x, v3.x)), _max_quads)
+	_bounds[1].push(_written, -minf(minf(v0.y, v1.y), minf(v2.y, v3.y)), _max_quads)
+	_bounds[2].push(_written, -minf(minf(v0.z, v1.z), minf(v2.z, v3.z)), _max_quads)
+	_bounds[3].push(_written, maxf(maxf(v0.x, v1.x), maxf(v2.x, v3.x)), _max_quads)
+	_bounds[4].push(_written, maxf(maxf(v0.y, v1.y), maxf(v2.y, v3.y)), _max_quads)
+	_bounds[5].push(_written, maxf(maxf(v0.z, v1.z), maxf(v2.z, v3.z)), _max_quads)
+
+	if _dirty_count == 0:
+		_dirty_from = _cursor
+	_dirty_count += 1
 	_cursor = (_cursor + 1) % _max_quads
-	_dirty = true
 
 
 func flush() -> void:
-	if not _dirty:
+	if _dirty_count == 0:
 		return
-	_dirty = false
+	var count := mini(_dirty_count, _max_quads)
+	var from := _dirty_from if count < _max_quads else 0
+	_dirty_count = 0
+	if not _can_patch:
+		_build_surface()
+		return
+	# Upload only the quads laid since the last flush instead of rebuilding the
+	# whole mesh (tens of thousands of vertices) every frame a wheel is sliding.
+	var first := mini(count, _max_quads - from)
+	_upload_quads(from, first)
+	if count > first:
+		_upload_quads(0, count - first)
+	_update_bounds()
+
+
+func _upload_quads(from: int, count: int) -> void:
+	var begin := from * 6
+	var end := begin + count * 6
+	_array_mesh.surface_update_vertex_region(0, begin * 12, _verts.slice(begin, end).to_byte_array())
+	_array_mesh.surface_update_attribute_region(0, begin * 8, _uvs.slice(begin, end).to_byte_array())
+
+
+func _update_bounds() -> void:
+	# The box the engine would compute over every vertex in the buffer. Slots
+	# never written still sit at the origin until the ring has filled once.
+	var low := Vector3.ZERO
+	var high := Vector3.ZERO
+	if _written > 0:
+		low = Vector3(-_bounds[0].top(), -_bounds[1].top(), -_bounds[2].top())
+		high = Vector3(_bounds[3].top(), _bounds[4].top(), _bounds[5].top())
+		if _written < _max_quads:
+			low = low.min(Vector3.ZERO)
+			high = high.max(Vector3.ZERO)
+	custom_aabb = AABB(low, high - low)
+
+
+func _build_surface() -> void:
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = _verts
 	arrays[Mesh.ARRAY_TEX_UV] = _uvs
 	_array_mesh.clear_surfaces()
-	_array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	_array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, Mesh.ARRAY_FLAG_USE_DYNAMIC_UPDATE)
+	var format := _array_mesh.surface_get_format(0)
+	var vertex_count := _verts.size()
+	_can_patch = (
+		RenderingServer.mesh_surface_get_format_vertex_stride(format, vertex_count) == 12
+		and RenderingServer.mesh_surface_get_format_attribute_stride(format, vertex_count) == 8
+		and RenderingServer.mesh_surface_get_format_offset(format, vertex_count, Mesh.ARRAY_VERTEX) == 0
+		and RenderingServer.mesh_surface_get_format_offset(format, vertex_count, Mesh.ARRAY_TEX_UV) == 0
+	)
 
 
 func _ground_point(sim_x: float, sim_z: float) -> Vector3:
