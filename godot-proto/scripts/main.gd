@@ -1190,20 +1190,18 @@ func _update_camera(dt: float) -> void:
 	var aim_x := _car.x + _car.vx * look_ahead
 	var aim_z := _car.z + _car.vz * look_ahead
 	var aim_y := DesertTerrain.ground_height(_car.x, _car.z)
+	var target_yaw := _car.heading if _stabilizer.world_rotate else 0.0
 
 	if dt > 0.0:
 		_cam_target.x = SimMath.damp(_cam_target.x, aim_x, 5.0, dt)
 		_cam_target.z = SimMath.damp(_cam_target.z, -aim_z, 5.0, dt)
 		_cam_target.y = SimMath.damp(_cam_target.y, aim_y, 3.0, dt)
 		_cam_distance = SimMath.damp(_cam_distance, lerpf(CAMERA_DISTANCE_SLOW, CAMERA_DISTANCE_FAST, speed_fraction), 1.5, dt)
-		if _stabilizer.world_rotate:
-			_cam_yaw = SimMath.wrap_angle(_car.heading)
-		else:
-			_cam_yaw = SimMath.damp_angle(_cam_yaw, 0.0, CAMERA_YAW_FOLLOW_RATE, dt)
+		_cam_yaw = SimMath.damp_angle(_cam_yaw, target_yaw, CAMERA_YAW_FOLLOW_RATE, dt)
 	else:
 		_cam_target = Vector3(aim_x, aim_y, -aim_z)
 		_cam_distance = CAMERA_DISTANCE_SLOW
-		_cam_yaw = SimMath.wrap_angle(_car.heading) if _stabilizer.world_rotate else 0.0
+		_cam_yaw = SimMath.wrap_angle(target_yaw)
 
 	_shake = maxf(NITROUS_SHAKE * _nitro_level, _shake - dt * 2.2)
 	var jolt := _shake * _shake * 1.6
