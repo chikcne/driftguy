@@ -1639,12 +1639,14 @@ func _toggle_gyro() -> void:
 	_stabilizer.gyro_user_set = true
 	if not _stabilizer.world_rotate_user_set:
 		_stabilizer.world_rotate = _stabilizer.gyro_enabled
+	_stabilizer.sync_default_counter_rotate()
 	sync_gyro_settings()
 
 
 func _toggle_world_rotate() -> void:
 	_stabilizer.world_rotate = not _stabilizer.world_rotate
 	_stabilizer.world_rotate_user_set = true
+	_stabilizer.sync_default_counter_rotate()
 	sync_gyro_settings()
 
 
