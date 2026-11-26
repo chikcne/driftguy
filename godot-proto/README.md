@@ -18,7 +18,7 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 
 ### iPhone (Gyro + Touch)
 - **Tilt phone** — Steer (with horizon-locked counter-rotating camera; the upgrade picker stays level with it)
-- **Swipe on the left half** — Up to accelerate, down to brake and then reverse; the swipe length sets how hard (full throttle at about 18 mm up, full reverse at about 12 mm down, 2 mm dead zone), holding keeps the level and lifting the thumb coasts
+- **Swipe on the left half** — Up to accelerate, down to brake and then reverse; each touch locks its own up/down axis from your swipe direction (capped to ±45° from screen vertical, ignoring gyroscope rotation). The swipe length along that axis sets how hard (full throttle at about 18 mm up, full reverse at about 12 mm down, 2 mm dead zone), holding keeps the level and lifting the thumb coasts
 - **BRAKE** — Left thumb pad (brakes to a stop, never reverses)
 - **NITRO** — Right thumb pad (ignites banked nitrous tank)
 - **DRIFT** — Right thumb handbrake pad

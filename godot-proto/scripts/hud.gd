@@ -183,6 +183,7 @@ class ThrottlePad:
 	const FORWARD_TRAVEL_MM := 18.0
 	const REVERSE_TRAVEL_MM := 12.0
 	const DEAD_ZONE_MM := 2.0
+	const MAX_AXIS_ANGLE_RAD := PI * 0.25
 	const MIN_TRAVEL_SCREEN_FRACTION := 0.1
 	const MAX_TRAVEL_SCREEN_FRACTION := 0.34
 	const FALLBACK_SCREEN_HEIGHT_MM := 65.0
@@ -200,7 +201,9 @@ class ThrottlePad:
 
 	var _finger := NO_FINGER
 	var _origin := Vector2.ZERO
-	var _touch_y := 0.0
+	var _axis := Vector2.UP
+	var _axis_locked := false
+	var _pull := 0.0
 	var _forward_travel := 0.0
 	var _reverse_travel := 0.0
 	var _dead_zone := 0.0
@@ -218,7 +221,7 @@ class ThrottlePad:
 			if _finger == NO_FINGER:
 				_grab(drag.index, drag.position)
 			elif drag.index == _finger:
-				_follow(drag.position.y)
+				_follow(drag.position)
 
 	func _notification(what: int) -> void:
 		if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_APPLICATION_PAUSED:
@@ -226,6 +229,9 @@ class ThrottlePad:
 
 	func release() -> void:
 		_finger = NO_FINGER
+		_axis = Vector2.UP
+		_axis_locked = false
+		_pull = 0.0
 		_set_drive(0.0)
 
 	func _grab(finger: int, at: Vector2) -> void:
@@ -235,19 +241,37 @@ class ThrottlePad:
 		var room_below := size.y - BOTTOM_EDGE_MARGIN - at.y
 		_finger = finger
 		_origin = at
-		_touch_y = at.y
+		_axis = Vector2.UP
+		_axis_locked = false
+		_pull = 0.0
 		_forward_travel = clampf(FORWARD_TRAVEL_MM * units_per_mm, shortest, longest)
 		_reverse_travel = clampf(minf(REVERSE_TRAVEL_MM * units_per_mm, room_below), shortest, longest)
 		_dead_zone = minf(DEAD_ZONE_MM * units_per_mm, shortest * 0.5)
 		_set_drive(0.0)
 
-	func _follow(touch_y: float) -> void:
-		_touch_y = touch_y
-		_origin.y = clampf(_origin.y, touch_y - _reverse_travel, touch_y + _forward_travel)
-		var pull := _origin.y - touch_y
+	func _follow(touch_pos: Vector2) -> void:
+		var delta := touch_pos - _origin
+		if not _axis_locked and absf(delta.y) > _dead_zone * 0.25:
+			var candidate := _axis_from_delta(delta)
+			if absf(delta.dot(candidate)) > _dead_zone:
+				_axis = candidate
+				_axis_locked = true
+		var pull := delta.dot(_axis)
+		if pull > _forward_travel:
+			_origin += _axis * (pull - _forward_travel)
+			pull = _forward_travel
+		elif pull < -_reverse_travel:
+			_origin += _axis * (pull + _reverse_travel)
+			pull = -_reverse_travel
+		_pull = pull
 		var travel := _forward_travel if pull >= 0.0 else _reverse_travel
 		var level := clampf((absf(pull) - _dead_zone) / (travel - _dead_zone), 0.0, 1.0)
 		_set_drive(level * signf(pull))
+
+	static func _axis_from_delta(delta: Vector2) -> Vector2:
+		var up_vec := delta if delta.y <= 0.0 else -delta
+		var angle := clampf(atan2(up_vec.x, -up_vec.y), -MAX_AXIS_ANGLE_RAD, MAX_AXIS_ANGLE_RAD)
+		return Vector2(sin(angle), -cos(angle))
 
 	func _set_drive(value: float) -> void:
 		drive = value
@@ -269,11 +293,10 @@ class ThrottlePad:
 	func _draw() -> void:
 		if _finger == NO_FINGER:
 			return
-		var x := _origin.x
-		var top := Vector2(x, _origin.y - _forward_travel)
-		var bottom := Vector2(x, _origin.y + _reverse_travel)
-		var knob := Vector2(x, _touch_y)
-		var ends := Vector2(TRACK_END_HALF_WIDTH, 0.0)
+		var top := _origin + _axis * _forward_travel
+		var bottom := _origin - _axis * _reverse_travel
+		var knob := _origin + _axis * _pull
+		var ends := Vector2(-_axis.y, _axis.x) * TRACK_END_HALF_WIDTH
 		draw_line(top, bottom, TRACK_COLOR, TRACK_WIDTH, true)
 		draw_line(top - ends, top + ends, TRACK_COLOR, TRACK_WIDTH, true)
 		draw_line(bottom - ends, bottom + ends, TRACK_COLOR, TRACK_WIDTH, true)
