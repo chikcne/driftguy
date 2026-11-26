@@ -13,6 +13,10 @@ const PLACEMENT_ATTEMPTS := 5
 const ROOTED_ID_STRIDE := 256
 const LOOSE_CAPACITY := 64
 const SWAY_CAPACITY := 8
+# Loaded chunks span 20 collider cells; two spare cells each side cover props
+# whose radius pokes past a chunk edge.
+const GRID_MARGIN := 2
+const GRID_SPAN := (VIEW_RADIUS_CHUNKS * 2 + 1) * 4 + GRID_MARGIN * 2
 const STACK_MIN_SCALE := 1.0
 const STACK_MAX_SCALE := 1.2
 const STACK_SPACING := 1.5
@@ -116,13 +120,36 @@ var _props: Dictionary = {} # String -> Props.PropDef
 var _prop_meshes: Dictionary = {} # String -> MultiMeshInstance3D
 var _loose_batches: Dictionary = {} # String -> SimMath.InstanceBatch
 var _chunks: Dictionary = {} # Vector2i -> ChunkData
-var _collider_grid: Dictionary = {} # Vector2i -> Array[Collider]
-var _rooted_grid: Dictionary = {} # Vector2i -> Array[Rooted]
+
+# Broadphase grid over the loaded chunks, rebuilt whenever the chunk set changes.
+# Stored as flat cell-sorted arrays (cell c owns entries start[c] .. start[c + 1])
+# so the per-enemy queries below read packed floats instead of hashing Vector2i
+# keys and walking object buckets. Entries keep the order the old dictionary
+# buckets had, so collision results are unchanged.
+var _grid_ox := 0
+var _grid_oz := 0
+var _col_start := PackedInt32Array()
+var _col_x := PackedFloat64Array()
+var _col_z := PackedFloat64Array()
+var _col_r := PackedFloat64Array()
+var _root_start := PackedInt32Array()
+var _root_x := PackedFloat64Array()
+var _root_z := PackedFloat64Array()
+var _root_r := PackedFloat64Array()
+var _root_hold := PackedFloat64Array()
+var _root_obj: Array[Rooted] = []
 var _uprooted: Dictionary = {} # int -> bool
 var _spawned_caches: Dictionary = {} # String -> bool
 var _loose := LooseSystem.new()
 var _swaying: Array[Rooted] = []
+var _sway_drawn := 0 # swaying plants in the loose batches as last drawn
 var _strain := Roots.StrainResult.new()
+var _loose_contact := Contact.new()
+var _ground_heights := PackedFloat64Array() # scratch for _create_ground
+# Chunks streamed in while driving get their ground mesh a frame or so later,
+# one per frame, so crossing a chunk edge does not build a whole row of meshes
+# at once. They sit two chunks out, beyond the camera's normal view.
+var _pending_ground: Array[ChunkData] = []
 var _material: StandardMaterial3D
 var _center_cx := 999999
 var _center_cz := 999999
@@ -139,6 +166,8 @@ func setup(shared_material: StandardMaterial3D) -> void:
 	_avoid_obs_x.resize(AVOID_MAX_OBS)
 	_avoid_obs_z.resize(AVOID_MAX_OBS)
 	_avoid_obs_r.resize(AVOID_MAX_OBS)
+	_col_start.resize(GRID_SPAN * GRID_SPAN + 1)
+	_root_start.resize(GRID_SPAN * GRID_SPAN + 1)
 
 	for prop_name: String in _props.keys():
 		var prop: Props.PropDef = _props[prop_name]
@@ -168,6 +197,7 @@ func setup(shared_material: StandardMaterial3D) -> void:
 
 
 func reset_world() -> void:
+	_pending_ground.clear()
 	_loose.clear()
 	_uprooted.clear()
 	_spawned_caches.clear()
@@ -175,8 +205,7 @@ func reset_world() -> void:
 	for chunk: ChunkData in _chunks.values():
 		_dispose_chunk(chunk)
 	_chunks.clear()
-	_collider_grid.clear()
-	_rooted_grid.clear()
+	_clear_collider_grid()
 	_center_cx = 999999
 	_center_cz = 999999
 	_render_loose()
@@ -198,12 +227,13 @@ func _exit_tree() -> void:
 			r.group.clear()
 		chunk.rooted.clear()
 	_chunks.clear()
+	_pending_ground.clear()
 	_swaying.clear()
-	_collider_grid.clear()
-	_rooted_grid.clear()
+	_clear_collider_grid()
 
 
 func step_world(dt: float, focus_x: float, focus_z: float) -> void:
+	_build_pending_ground()
 	_loose.step(dt, focus_x, focus_z, _resolve_callable)
 	for i in range(_swaying.size() - 1, -1, -1):
 		var plant := _swaying[i]
@@ -213,31 +243,34 @@ func step_world(dt: float, focus_x: float, focus_z: float) -> void:
 
 
 func shove(mover: Variant, radius: float, mass: float, out: LooseSystem.ShoveResult) -> LooseSystem.ShoveResult:
-	var min_x := int(floor((mover.x - radius) / COLLIDER_CELL))
-	var max_x := int(floor((mover.x + radius) / COLLIDER_CELL))
-	var min_z := int(floor((mover.z - radius) / COLLIDER_CELL))
-	var max_z := int(floor((mover.z + radius) / COLLIDER_CELL))
+	var mx: float = mover.x
+	var mz: float = mover.z
+	var min_x := maxi(int(floor((mx - radius) / COLLIDER_CELL)) - _grid_ox, 0)
+	var max_x := mini(int(floor((mx + radius) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+	var min_z := maxi(int(floor((mz - radius) / COLLIDER_CELL)) - _grid_oz, 0)
+	var max_z := mini(int(floor((mz + radius) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
 	var torn := 0
 	var grip := 0.0
 	var grip_x := 0.0
 	var grip_z := 0.0
 
 	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
 		for gx in range(min_x, max_x + 1):
-			var key := Vector2i(gx, gz)
-			if not _rooted_grid.has(key):
-				continue
-			var bucket: Array = _rooted_grid[key]
-			for plant: Rooted in bucket:
-				if not plant.alive:
-					continue
-				var reach := radius + plant.r
-				var dx: float = plant.x - mover.x
-				var dz: float = plant.z - mover.z
+			for k in range(_root_start[row + gx], _root_start[row + gx + 1]):
+				var reach := radius + _root_r[k]
+				var dx := _root_x[k] - mx
+				var dz := _root_z[k] - mz
 				if dx * dx + dz * dz >= reach * reach:
+					continue
+				var plant := _root_obj[k]
+				if not plant.alive:
 					continue
 				if plant.hold > 0.0:
 					var outcome := Roots.strain(plant, mover, radius, mass, _strain)
+					# A plant that holds pushes the mover back out of itself.
+					mx = mover.x
+					mz = mover.z
 					grip += _strain.impulse
 					grip_x += _strain.x * _strain.impulse
 					grip_z += _strain.z * _strain.impulse
@@ -264,6 +297,8 @@ func update_around(sim_x: float, sim_z: float) -> void:
 	var cz := int(floor(sim_z / DesertTerrain.CHUNK_SIZE))
 	if cx == _center_cx and cz == _center_cz:
 		return
+	# A fresh world has to be fully drawn on its first frame.
+	var defer_ground := _center_cx != 999999
 	_center_cx = cx
 	_center_cz = cz
 
@@ -273,7 +308,7 @@ func update_around(sim_x: float, sim_z: float) -> void:
 			var key := Vector2i(cx + dx, cz + dz)
 			wanted[key] = true
 			if not _chunks.has(key):
-				_chunks[key] = _create_chunk(cx + dx, cz + dz)
+				_chunks[key] = _create_chunk(cx + dx, cz + dz, defer_ground)
 
 	var to_remove: Array[Vector2i] = []
 	for key: Vector2i in _chunks.keys():
@@ -295,20 +330,20 @@ func update_around(sim_x: float, sim_z: float) -> void:
 
 func resolve(body: Variant, radius: float, contact: Contact) -> Contact:
 	contact.hit = false
-	var min_x := int(floor((body.x - radius) / COLLIDER_CELL))
-	var max_x := int(floor((body.x + radius) / COLLIDER_CELL))
-	var min_z := int(floor((body.z - radius) / COLLIDER_CELL))
-	var max_z := int(floor((body.z + radius) / COLLIDER_CELL))
+	var bx: float = body.x
+	var bz: float = body.z
+	var min_x := maxi(int(floor((bx - radius) / COLLIDER_CELL)) - _grid_ox, 0)
+	var max_x := mini(int(floor((bx + radius) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+	var min_z := maxi(int(floor((bz - radius) / COLLIDER_CELL)) - _grid_oz, 0)
+	var max_z := mini(int(floor((bz + radius) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
+	var hit := false
 	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
 		for gx in range(min_x, max_x + 1):
-			var key := Vector2i(gx, gz)
-			if not _collider_grid.has(key):
-				continue
-			var bucket: Array = _collider_grid[key]
-			for col: Collider in bucket:
-				var dx: float = body.x - col.x
-				var dz: float = body.z - col.z
-				var reach := radius + col.r
+			for k in range(_col_start[row + gx], _col_start[row + gx + 1]):
+				var dx := bx - _col_x[k]
+				var dz := bz - _col_z[k]
+				var reach := radius + _col_r[k]
 				var dist_sq := dx * dx + dz * dz
 				if dist_sq >= reach * reach:
 					continue
@@ -317,16 +352,20 @@ func resolve(body: Variant, radius: float, contact: Contact) -> Contact:
 					dist = 0.001
 				var nx := dx / dist
 				var nz := dz / dist
-				body.x = col.x + nx * reach
-				body.z = col.z + nz * reach
-				contact.hit = true
+				bx = _col_x[k] + nx * reach
+				bz = _col_z[k] + nz * reach
+				hit = true
 				contact.nx = nx
 				contact.nz = nz
+	if hit:
+		body.x = bx
+		body.z = bz
+		contact.hit = true
 	return contact
 
 
 func _resolve_obstruction(body: LooseSystem.LooseBody, radius: float, out: LooseSystem.Obstruction) -> void:
-	var c := Contact.new()
+	var c := _loose_contact
 	resolve(body, radius, c)
 	out.hit = c.hit
 	out.nx = c.nx
@@ -365,47 +404,45 @@ func steer_around_obstacles(
 	var end_x2 := x + cfx * (lookahead * 0.75)
 	var end_z2 := z + cfz * (lookahead * 0.75)
 	var pad := radius + 5.0
-	var min_x := int(floor((minf(x, minf(end_x1, end_x2)) - pad) / COLLIDER_CELL))
-	var max_x := int(floor((maxf(x, maxf(end_x1, end_x2)) + pad) / COLLIDER_CELL))
-	var min_z := int(floor((minf(z, minf(end_z1, end_z2)) - pad) / COLLIDER_CELL))
-	var max_z := int(floor((maxf(z, maxf(end_z1, end_z2)) + pad) / COLLIDER_CELL))
+	var min_x := maxi(int(floor((minf(x, minf(end_x1, end_x2)) - pad) / COLLIDER_CELL)) - _grid_ox, 0)
+	var max_x := mini(int(floor((maxf(x, maxf(end_x1, end_x2)) + pad) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+	var min_z := maxi(int(floor((minf(z, minf(end_z1, end_z2)) - pad) / COLLIDER_CELL)) - _grid_oz, 0)
+	var max_z := mini(int(floor((maxf(z, maxf(end_z1, end_z2)) + pad) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
 
 	var obs_count := 0
 	var root_hold_limit := mass * maxf(speed, 12.0) * 0.58
 	var max_range_sq := (lookahead + pad) * (lookahead + pad)
 
 	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
 		for gx in range(min_x, max_x + 1):
-			var key := Vector2i(gx, gz)
-			if _collider_grid.has(key):
-				var bucket: Array = _collider_grid[key]
-				for col: Collider in bucket:
-					var rx := col.x - x
-					var rz := col.z - z
-					if rx * rx + rz * rz > max_range_sq:
-						continue
-					if obs_count < AVOID_MAX_OBS:
-						_avoid_obs_x[obs_count] = rx
-						_avoid_obs_z[obs_count] = rz
-						_avoid_obs_r[obs_count] = col.r + radius + 0.9
-						obs_count += 1
-			if _rooted_grid.has(key):
-				var rbucket: Array = _rooted_grid[key]
-				for plant: Rooted in rbucket:
-					if not plant.alive or plant.hold <= 0.0:
-						continue
-					# Heavy vehicles plow through weak plants; lighter ones steer around trees/cacti that bounce them
-					if plant.hold < root_hold_limit:
-						continue
-					var rx := plant.x - x
-					var rz := plant.z - z
-					if rx * rx + rz * rz > max_range_sq:
-						continue
-					if obs_count < AVOID_MAX_OBS:
-						_avoid_obs_x[obs_count] = rx
-						_avoid_obs_z[obs_count] = rz
-						_avoid_obs_r[obs_count] = plant.r + radius + 0.75
-						obs_count += 1
+			var cell := row + gx
+			for k in range(_col_start[cell], _col_start[cell + 1]):
+				var rx := _col_x[k] - x
+				var rz := _col_z[k] - z
+				if rx * rx + rz * rz > max_range_sq:
+					continue
+				if obs_count < AVOID_MAX_OBS:
+					_avoid_obs_x[obs_count] = rx
+					_avoid_obs_z[obs_count] = rz
+					_avoid_obs_r[obs_count] = _col_r[k] + radius + 0.9
+					obs_count += 1
+			for k in range(_root_start[cell], _root_start[cell + 1]):
+				# Heavy vehicles plow through weak plants; lighter ones steer around trees/cacti that bounce them
+				var hold := _root_hold[k]
+				if hold <= 0.0 or hold < root_hold_limit:
+					continue
+				var rx := _root_x[k] - x
+				var rz := _root_z[k] - z
+				if rx * rx + rz * rz > max_range_sq:
+					continue
+				if not _root_obj[k].alive:
+					continue
+				if obs_count < AVOID_MAX_OBS:
+					_avoid_obs_x[obs_count] = rx
+					_avoid_obs_z[obs_count] = rz
+					_avoid_obs_r[obs_count] = _root_r[k] + radius + 0.75
+					obs_count += 1
 
 	if obs_count == 0:
 		return out
@@ -495,12 +532,26 @@ func _pick_scatter(rng: SimMath.SeededRng) -> String:
 	return "rockA"
 
 
-func _create_chunk(cx: int, cz: int) -> ChunkData:
+func _build_pending_ground() -> void:
+	while not _pending_ground.is_empty():
+		var chunk: ChunkData = _pending_ground.pop_front()
+		# Skip chunks that were unloaded again before their turn came.
+		if _chunks.get(Vector2i(chunk.cx, chunk.cz)) != chunk:
+			continue
+		chunk.ground = _create_ground(chunk.cx, chunk.cz)
+		add_child(chunk.ground)
+		return
+
+
+func _create_chunk(cx: int, cz: int, defer_ground: bool = false) -> ChunkData:
 	var chunk := ChunkData.new()
 	chunk.cx = cx
 	chunk.cz = cz
-	chunk.ground = _create_ground(cx, cz)
-	add_child(chunk.ground)
+	if defer_ground:
+		_pending_ground.append(chunk)
+	else:
+		chunk.ground = _create_ground(cx, cz)
+		add_child(chunk.ground)
 
 	var rng := SimMath.SeededRng.new(int(floor(SimMath.hash2(cx, cz) * 4294967296.0)))
 	var origin_x := float(cx) * DesertTerrain.CHUNK_SIZE
@@ -713,28 +764,32 @@ func _settle(plant: Rooted) -> void:
 
 
 func _render_loose() -> void:
-	for prop_name: String in _loose_batches.keys():
-		var batch: SimMath.InstanceBatch = _loose_batches[prop_name]
+	# Sleeping debris and settled plants keep last frame's instances: redraw only
+	# when a body moved, or a plant is swaying (or just stopped).
+	if not _loose.dirty and _swaying.is_empty() and _sway_drawn == 0:
+		return
+	_loose.dirty = false
+	_sway_drawn = _swaying.size()
+	for batch: SimMath.InstanceBatch in _loose_batches.values():
 		batch.begin()
-		for body in _loose.bodies:
-			if body.kind != prop_name:
-				continue
-			batch.push_transform(SimMath.sim_quat_transform(
-				body.x,
-				body.y,
-				body.z,
-				body.qx,
-				body.qy,
-				body.qz,
-				body.qw,
-				body.scale,
-				body.scale_y,
-				body.origin,
-			))
-		for plant in _swaying:
-			if plant.prop_name != prop_name:
-				continue
-			batch.push_transform(Roots.lean_transform(plant, plant.y, plant.yaw, plant.scale, plant.scale_y))
+	for body in _loose.bodies:
+		(_loose_batches[body.kind] as SimMath.InstanceBatch).push_transform(SimMath.sim_quat_transform(
+			body.x,
+			body.y,
+			body.z,
+			body.qx,
+			body.qy,
+			body.qz,
+			body.qw,
+			body.scale,
+			body.scale_y,
+			body.origin,
+		))
+	for plant in _swaying:
+		(_loose_batches[plant.prop_name] as SimMath.InstanceBatch).push_transform(
+			Roots.lean_transform(plant, plant.y, plant.yaw, plant.scale, plant.scale_y)
+		)
+	for batch: SimMath.InstanceBatch in _loose_batches.values():
 		batch.commit()
 
 
@@ -767,55 +822,129 @@ func _rebuild_instances_of(prop_name: String) -> void:
 	mmi.visible = idx > 0
 
 
+func _clear_collider_grid() -> void:
+	_col_start.fill(0)
+	_root_start.fill(0)
+	_col_x.clear()
+	_col_z.clear()
+	_col_r.clear()
+	_root_x.clear()
+	_root_z.clear()
+	_root_r.clear()
+	_root_hold.clear()
+	_root_obj.clear()
+
+
 func _rebuild_collider_grid() -> void:
-	_collider_grid.clear()
-	_rooted_grid.clear()
+	_grid_ox = (_center_cx - VIEW_RADIUS_CHUNKS) * 4 - GRID_MARGIN
+	_grid_oz = (_center_cz - VIEW_RADIUS_CHUNKS) * 4 - GRID_MARGIN
+
+	# Counting sort: tally each cell's entries, turn the tallies into start
+	# offsets, then drop every entry into its cell in the original order.
+	var col_fill := PackedInt32Array()
+	var root_fill := PackedInt32Array()
+	col_fill.resize(GRID_SPAN * GRID_SPAN + 1)
+	root_fill.resize(GRID_SPAN * GRID_SPAN + 1)
+	for chunk: ChunkData in _chunks.values():
+		for plant in chunk.rooted:
+			if plant.alive:
+				_tally_cells(root_fill, plant.x, plant.z, plant.r)
+		for col in chunk.colliders:
+			_tally_cells(col_fill, col.x, col.z, col.r)
+	var col_total := _tallies_to_starts(col_fill, _col_start)
+	var root_total := _tallies_to_starts(root_fill, _root_start)
+
+	_col_x.resize(col_total)
+	_col_z.resize(col_total)
+	_col_r.resize(col_total)
+	_root_x.resize(root_total)
+	_root_z.resize(root_total)
+	_root_r.resize(root_total)
+	_root_hold.resize(root_total)
+	_root_obj.resize(root_total)
+
 	for chunk: ChunkData in _chunks.values():
 		for plant in chunk.rooted:
 			if not plant.alive:
 				continue
-			var min_x := int(floor((plant.x - plant.r) / COLLIDER_CELL))
-			var max_x := int(floor((plant.x + plant.r) / COLLIDER_CELL))
-			var min_z := int(floor((plant.z - plant.r) / COLLIDER_CELL))
-			var max_z := int(floor((plant.z + plant.r) / COLLIDER_CELL))
+			var min_x := maxi(int(floor((plant.x - plant.r) / COLLIDER_CELL)) - _grid_ox, 0)
+			var max_x := mini(int(floor((plant.x + plant.r) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+			var min_z := maxi(int(floor((plant.z - plant.r) / COLLIDER_CELL)) - _grid_oz, 0)
+			var max_z := mini(int(floor((plant.z + plant.r) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
 			for gz in range(min_z, max_z + 1):
 				for gx in range(min_x, max_x + 1):
-					var key := Vector2i(gx, gz)
-					if not _rooted_grid.has(key):
-						_rooted_grid[key] = []
-					(_rooted_grid[key] as Array).append(plant)
+					var cell := gz * GRID_SPAN + gx
+					var k := root_fill[cell]
+					root_fill[cell] = k + 1
+					_root_x[k] = plant.x
+					_root_z[k] = plant.z
+					_root_r[k] = plant.r
+					_root_hold[k] = plant.hold
+					_root_obj[k] = plant
 		for col in chunk.colliders:
-			var min_x := int(floor((col.x - col.r) / COLLIDER_CELL))
-			var max_x := int(floor((col.x + col.r) / COLLIDER_CELL))
-			var min_z := int(floor((col.z - col.r) / COLLIDER_CELL))
-			var max_z := int(floor((col.z + col.r) / COLLIDER_CELL))
+			var min_x := maxi(int(floor((col.x - col.r) / COLLIDER_CELL)) - _grid_ox, 0)
+			var max_x := mini(int(floor((col.x + col.r) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+			var min_z := maxi(int(floor((col.z - col.r) / COLLIDER_CELL)) - _grid_oz, 0)
+			var max_z := mini(int(floor((col.z + col.r) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
 			for gz in range(min_z, max_z + 1):
 				for gx in range(min_x, max_x + 1):
-					var key := Vector2i(gx, gz)
-					if not _collider_grid.has(key):
-						_collider_grid[key] = []
-					(_collider_grid[key] as Array).append(col)
+					var cell := gz * GRID_SPAN + gx
+					var k := col_fill[cell]
+					col_fill[cell] = k + 1
+					_col_x[k] = col.x
+					_col_z[k] = col.z
+					_col_r[k] = col.r
 
 
-static func _ground_color(ix: int, iz: int, variant: int, h: float) -> Color:
-	var patch := 0.5 + 0.5 * sin(float(ix) * 0.19 + 1.7) * cos(float(iz) * 0.23 - 0.6)
-	var grain := SimMath.hash2(ix * 2 + variant, iz)
-	var t := clampf(0.55 - h * 0.09 + (grain - 0.5) * 0.3 + (patch - 0.5) * 0.35, 0.0, 1.0)
-	var c := Palette.SAND_LIGHT.lerp(Palette.SAND_DARK, t)
-	if patch > 0.9 and grain > 0.5:
-		c = c.lerp(Palette.SAND_SHADOW, 0.5)
-	return c
+func _tally_cells(tally: PackedInt32Array, x: float, z: float, r: float) -> void:
+	var min_x := maxi(int(floor((x - r) / COLLIDER_CELL)) - _grid_ox, 0)
+	var max_x := mini(int(floor((x + r) / COLLIDER_CELL)) - _grid_ox, GRID_SPAN - 1)
+	var min_z := maxi(int(floor((z - r) / COLLIDER_CELL)) - _grid_oz, 0)
+	var max_z := mini(int(floor((z + r) / COLLIDER_CELL)) - _grid_oz, GRID_SPAN - 1)
+	for gz in range(min_z, max_z + 1):
+		for gx in range(min_x, max_x + 1):
+			tally[gz * GRID_SPAN + gx] += 1
+
+
+static func _tallies_to_starts(tally: PackedInt32Array, starts: PackedInt32Array) -> int:
+	# Leaves `tally` holding each cell's first free slot, ready for the fill pass.
+	var total := 0
+	for cell in GRID_SPAN * GRID_SPAN:
+		var n := tally[cell]
+		starts[cell] = total
+		tally[cell] = total
+		total += n
+	starts[GRID_SPAN * GRID_SPAN] = total
+	return total
 
 
 func _create_ground(cx: int, cz: int) -> MeshInstance3D:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Runs for a whole row of chunks whenever the car crosses a chunk edge, so
+	# it writes the vertex arrays directly rather than going through
+	# SurfaceTool one call per vertex, and samples each grid corner once.
+	var cells := DesertTerrain.CHUNK_CELLS
+	var side := cells + 1
+	var base_ix := cx * cells
+	var base_iz := cz * cells
 
-	var base_ix := cx * DesertTerrain.CHUNK_CELLS
-	var base_iz := cz * DesertTerrain.CHUNK_CELLS
+	var heights := _ground_heights
+	heights.resize(side * side)
+	for local_z in side:
+		for local_x in side:
+			heights[local_z * side + local_x] = DesertTerrain.vertex_height(base_ix + local_x, base_iz + local_z)
 
-	for local_z in DesertTerrain.CHUNK_CELLS:
-		for local_x in DesertTerrain.CHUNK_CELLS:
+	var vertex_count := cells * cells * 6
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	verts.resize(vertex_count)
+	normals.resize(vertex_count)
+	colors.resize(vertex_count)
+
+	var v := 0
+	for local_z in cells:
+		var row := local_z * side
+		for local_x in cells:
 			var ix := base_ix + local_x
 			var iz := base_iz + local_z
 			var x0 := float(ix) * DesertTerrain.CELL_SIZE
@@ -823,39 +952,64 @@ func _create_ground(cx: int, cz: int) -> MeshInstance3D:
 			var z0 := float(iz) * DesertTerrain.CELL_SIZE
 			var z1 := z0 + DesertTerrain.CELL_SIZE
 
-			var h00 := DesertTerrain.vertex_height(ix, iz)
-			var h10 := DesertTerrain.vertex_height(ix + 1, iz)
-			var h01 := DesertTerrain.vertex_height(ix, iz + 1)
-			var h11 := DesertTerrain.vertex_height(ix + 1, iz + 1)
+			var h00 := heights[row + local_x]
+			var h10 := heights[row + local_x + 1]
+			var h01 := heights[row + side + local_x]
+			var h11 := heights[row + side + local_x + 1]
 
 			var p00 := Vector3(x0, h00, -z0)
 			var p10 := Vector3(x1, h10, -z0)
 			var p01 := Vector3(x0, h01, -z1)
 			var p11 := Vector3(x1, h11, -z1)
 
-			var c1 := _ground_color(ix, iz, 0, (h00 + h10 + h11) / 3.0)
+			# Sand colour of the two triangles; they share the per-cell patch term.
+			var patch := 0.5 + 0.5 * sin(float(ix) * 0.19 + 1.7) * cos(float(iz) * 0.23 - 0.6)
+			var grain1 := SimMath.hash2(ix * 2, iz)
+			var c1 := Palette.SAND_LIGHT.lerp(Palette.SAND_DARK, clampf(0.55 - ((h00 + h10 + h11) / 3.0) * 0.09 + (grain1 - 0.5) * 0.3 + (patch - 0.5) * 0.35, 0.0, 1.0))
+			if patch > 0.9 and grain1 > 0.5:
+				c1 = c1.lerp(Palette.SAND_SHADOW, 0.5)
 			var n1 := (p10 - p00).cross(p11 - p00).normalized()
 			if n1.y < 0.0:
 				n1 = -n1
-			st.set_color(c1)
-			st.set_normal(n1)
-			st.add_vertex(p00)
-			st.add_vertex(p11)
-			st.add_vertex(p10)
+			verts[v] = p00
+			verts[v + 1] = p11
+			verts[v + 2] = p10
+			normals[v] = n1
+			normals[v + 1] = n1
+			normals[v + 2] = n1
+			colors[v] = c1
+			colors[v + 1] = c1
+			colors[v + 2] = c1
 
-			var c2 := _ground_color(ix, iz, 1, (h00 + h11 + h01) / 3.0)
+			var grain2 := SimMath.hash2(ix * 2 + 1, iz)
+			var c2 := Palette.SAND_LIGHT.lerp(Palette.SAND_DARK, clampf(0.55 - ((h00 + h11 + h01) / 3.0) * 0.09 + (grain2 - 0.5) * 0.3 + (patch - 0.5) * 0.35, 0.0, 1.0))
+			if patch > 0.9 and grain2 > 0.5:
+				c2 = c2.lerp(Palette.SAND_SHADOW, 0.5)
 			var n2 := (p11 - p00).cross(p01 - p00).normalized()
 			if n2.y < 0.0:
 				n2 = -n2
-			st.set_color(c2)
-			st.set_normal(n2)
-			st.add_vertex(p00)
-			st.add_vertex(p01)
-			st.add_vertex(p11)
+			verts[v + 3] = p00
+			verts[v + 4] = p01
+			verts[v + 5] = p11
+			normals[v + 3] = n2
+			normals[v + 4] = n2
+			normals[v + 5] = n2
+			colors[v + 3] = c2
+			colors[v + 4] = c2
+			colors[v + 5] = c2
+			v += 6
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	var ground_mesh := ArrayMesh.new()
+	ground_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	var ground := MeshInstance3D.new()
 	ground.name = "Ground_%d_%d" % [cx, cz]
-	ground.mesh = st.commit()
+	ground.mesh = ground_mesh
 	ground.material_override = _material
 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return ground

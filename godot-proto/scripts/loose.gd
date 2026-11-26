@@ -25,6 +25,14 @@ const OBSTACLE_BOUNCE := 0.3
 const GYRATION := 0.6
 const UPROOT_SPIN := 0.8
 
+# Broadphase grid for shove(): every mover used to test all bodies each frame.
+# Rebuilt once per step() around the focus; bodies outside the span are clamped
+# into the border cells so they are still found.
+const GRID_CELL := 8.0
+const GRID_SPAN := 64
+const GRID_HALF := 32
+const GRID_SLACK := 2.0 # how far a body may be nudged between rebuilds
+
 
 class ShoveResult:
 	extends RefCounted
@@ -71,14 +79,50 @@ class LooseBody:
 
 
 var bodies: Array[LooseBody] = []
+# Set whenever a body is added, removed or moved; the renderer clears it once
+# it has redrawn. Lets a field of sleeping debris cost nothing per frame.
+var dirty := true
 var _obstruction := Obstruction.new()
+var _grid_head := PackedInt32Array()
+var _grid_next := PackedInt32Array()
+var _grid_ox := -GRID_HALF
+var _grid_oz := -GRID_HALF
+var _max_reach := 0.0
+var _near := PackedInt32Array()
 var _leftover := 0.0
 var _b := PackedFloat64Array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+
+func _init() -> void:
+	_grid_head.resize(GRID_SPAN * GRID_SPAN)
+	_grid_head.fill(-1)
+	_grid_next.resize(MAX_BODIES + 1)
 
 
 func clear() -> void:
 	bodies.clear()
 	_leftover = 0.0
+	_grid_head.fill(-1)
+	_max_reach = 0.0
+	dirty = true
+
+
+func _rebuild_grid() -> void:
+	_grid_head.fill(-1)
+	_max_reach = 0.0
+	for i in bodies.size():
+		_grid_insert(i)
+
+
+func _grid_insert(index: int) -> void:
+	var body := bodies[index]
+	var gx := clampi(int(floor(body.x / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+	var gz := clampi(int(floor(body.z / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+	var cell := gz * GRID_SPAN + gx
+	_grid_next[index] = _grid_head[cell]
+	_grid_head[cell] = index
+	if body.reach > _max_reach:
+		_max_reach = body.reach
 
 
 func spawn(kind: String, spec: Props.LooseSpec, x: float, base_y: float, z: float, yaw: float, scale: float, scale_y: float) -> LooseBody:
@@ -119,6 +163,10 @@ func spawn(kind: String, spec: Props.LooseSpec, x: float, base_y: float, z: floa
 	bodies.append(body)
 	if bodies.size() > MAX_BODIES:
 		bodies.pop_front()
+		_rebuild_grid() # every index shifted down by one
+	else:
+		_grid_insert(bodies.size() - 1)
+	dirty = true
 	return body
 
 
@@ -153,76 +201,99 @@ func shove(mover: Variant, radius: float, mass: float, out: ShoveResult) -> Shov
 	out.x = 0.0
 	out.z = 0.0
 	out.torn = 0
-	var ceiling_set := false
-	var ceiling := 0.0
-	for body in bodies:
-		var span := radius + body.reach
-		var off_x: float = body.x - mover.x
-		var off_z: float = body.z - mover.z
-		if off_x * off_x + off_z * off_z >= span * span:
-			continue
-		if not ceiling_set:
-			ceiling = DesertTerrain.ground_height(mover.x, mover.z) + SHOVE_CLEARANCE
-			ceiling_set = true
-		_orient(body)
-		var pts := body.points
-		var i := 0
-		var plen := pts.size()
-		while i < plen:
-			var lx := pts[i]
-			var ly := pts[i + 1]
-			var lz := pts[i + 2]
-			var sz := pts[i + 3]
-			i += 4
-			var cx := _b[0] * lx + _b[1] * ly + _b[2] * lz
-			var cy := _b[3] * lx + _b[4] * ly + _b[5] * lz
-			var cz := _b[6] * lx + _b[7] * ly + _b[8] * lz
-			if body.y + cy - sz > ceiling:
-				continue
-			var dx: float = body.x + cx - mover.x
-			var dz: float = body.z + cz - mover.z
-			var limit := radius + sz
-			var dist_sq := dx * dx + dz * dz
-			if dist_sq >= limit * limit:
-				continue
-			var dist := sqrt(dist_sq)
-			if dist < 0.001:
-				var spd := sqrt(mover.vx * mover.vx + mover.vz * mover.vz)
-				dx = mover.vx / spd if spd > 0.0 else 0.0
-				dz = mover.vz / spd if spd > 0.0 else 1.0
-				dist = 1.0
-			var nx := dx / dist
-			var nz := dz / dist
-			var rx := cx - nx * sz
-			var ry := cy
-			var rz := cz - nz * sz
-			var ux := body.vx + body.wy * rz - body.wz * ry
-			var uz := body.vz + body.wx * ry - body.wy * rx
-			var closing: float = (ux - mover.vx) * nx + (uz - mover.vz) * nz
-			var depth := limit - sqrt(dist_sq)
-			body.x += nx * depth
-			body.z += nz * depth
-			body.asleep = false
-			body.calm = 0.0
-			out.hit = true
-			if closing >= 0.0:
-				continue
-			var tx := ry * nz
-			var ty := rz * nx - rx * nz
-			var tz := -ry * nx
-			var resistance := 1.0 / body.mass + (tx * tx + ty * ty + tz * tz) / body.inertia + 1.0 / mass
-			var imp := (-(1.0 + SHOVE_BOUNCE) * closing) / resistance
-			_punch(body, rx, ry, rz, imp * nx, 0.0, imp * nz)
-			body.vy += (imp * SHOVE_LIFT) / body.mass
-			mover.vx -= (imp * nx) / mass
-			mover.vz -= (imp * nz) / mass
-			out.impulse += imp
-			out.x += (mover.x + nx * radius) * imp
-			out.z += (mover.z + nz * radius) * imp
+	if bodies.is_empty():
+		return out
+	var mx: float = mover.x
+	var mz: float = mover.z
+	var pad := radius + _max_reach + GRID_SLACK
+	var min_x := clampi(int(floor((mx - pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+	var max_x := clampi(int(floor((mx + pad) / GRID_CELL)) - _grid_ox, 0, GRID_SPAN - 1)
+	var min_z := clampi(int(floor((mz - pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+	var max_z := clampi(int(floor((mz + pad) / GRID_CELL)) - _grid_oz, 0, GRID_SPAN - 1)
+	_near.clear()
+	for gz in range(min_z, max_z + 1):
+		var row := gz * GRID_SPAN
+		for gx in range(min_x, max_x + 1):
+			var index := _grid_head[row + gx]
+			while index >= 0:
+				var body := bodies[index]
+				var span := radius + body.reach
+				var off_x := body.x - mx
+				var off_z := body.z - mz
+				if off_x * off_x + off_z * off_z < span * span:
+					_near.append(index)
+				index = _grid_next[index]
+	if _near.is_empty():
+		return out
+	# Shove in body order, exactly as the old all-bodies loop did.
+	if _near.size() > 1:
+		_near.sort()
+	var ceiling := DesertTerrain.ground_height(mx, mz) + SHOVE_CLEARANCE
+	for index in _near:
+		_shove_body(bodies[index], mover, mx, mz, radius, mass, ceiling, out)
 	if out.impulse > 0.0:
 		out.x /= out.impulse
 		out.z /= out.impulse
 	return out
+
+
+func _shove_body(body: LooseBody, mover: Variant, mx: float, mz: float, radius: float, mass: float, ceiling: float, out: ShoveResult) -> void:
+	_orient(body)
+	var pts := body.points
+	var i := 0
+	var plen := pts.size()
+	while i < plen:
+		var lx := pts[i]
+		var ly := pts[i + 1]
+		var lz := pts[i + 2]
+		var sz := pts[i + 3]
+		i += 4
+		var cx := _b[0] * lx + _b[1] * ly + _b[2] * lz
+		var cy := _b[3] * lx + _b[4] * ly + _b[5] * lz
+		var cz := _b[6] * lx + _b[7] * ly + _b[8] * lz
+		if body.y + cy - sz > ceiling:
+			continue
+		var dx: float = body.x + cx - mx
+		var dz: float = body.z + cz - mz
+		var limit := radius + sz
+		var dist_sq := dx * dx + dz * dz
+		if dist_sq >= limit * limit:
+			continue
+		var dist := sqrt(dist_sq)
+		if dist < 0.001:
+			var spd := sqrt(mover.vx * mover.vx + mover.vz * mover.vz)
+			dx = mover.vx / spd if spd > 0.0 else 0.0
+			dz = mover.vz / spd if spd > 0.0 else 1.0
+			dist = 1.0
+		var nx := dx / dist
+		var nz := dz / dist
+		var rx := cx - nx * sz
+		var ry := cy
+		var rz := cz - nz * sz
+		var ux := body.vx + body.wy * rz - body.wz * ry
+		var uz := body.vz + body.wx * ry - body.wy * rx
+		var closing: float = (ux - mover.vx) * nx + (uz - mover.vz) * nz
+		var depth := limit - sqrt(dist_sq)
+		body.x += nx * depth
+		body.z += nz * depth
+		body.asleep = false
+		body.calm = 0.0
+		out.hit = true
+		dirty = true
+		if closing >= 0.0:
+			continue
+		var tx := ry * nz
+		var ty := rz * nx - rx * nz
+		var tz := -ry * nx
+		var resistance := 1.0 / body.mass + (tx * tx + ty * ty + tz * tz) / body.inertia + 1.0 / mass
+		var imp := (-(1.0 + SHOVE_BOUNCE) * closing) / resistance
+		_punch(body, rx, ry, rz, imp * nx, 0.0, imp * nz)
+		body.vy += (imp * SHOVE_LIFT) / body.mass
+		mover.vx -= (imp * nx) / mass
+		mover.vz -= (imp * nz) / mass
+		out.impulse += imp
+		out.x += (mx + nx * radius) * imp
+		out.z += (mz + nz * radius) * imp
 
 
 func step(dt: float, focus_x: float, focus_z: float, resolve_fn: Callable = Callable()) -> void:
@@ -230,6 +301,7 @@ func step(dt: float, focus_x: float, focus_z: float, resolve_fn: Callable = Call
 		var body := bodies[i]
 		if absf(body.x - focus_x) > DESPAWN_DISTANCE or absf(body.z - focus_z) > DESPAWN_DISTANCE:
 			bodies.remove_at(i)
+			dirty = true
 	_leftover += dt
 	var steps := 0
 	while _leftover >= STEP:
@@ -241,6 +313,10 @@ func step(dt: float, focus_x: float, focus_z: float, resolve_fn: Callable = Call
 		for body in bodies:
 			if not body.asleep:
 				_integrate(body, STEP, resolve_fn)
+				dirty = true
+	_grid_ox = int(floor(focus_x / GRID_CELL)) - GRID_HALF
+	_grid_oz = int(floor(focus_z / GRID_CELL)) - GRID_HALF
+	_rebuild_grid()
 
 
 func _integrate(body: LooseBody, dt: float, resolve_fn: Callable) -> void:
