@@ -161,6 +161,10 @@ func nitro_empty() -> void:
 	_play_sfx("nitro_empty", 0.22, 1.0, "Master")
 
 
+func reverse_dash() -> void:
+	_play_sfx("reverse_dash", 0.75, randf_range(0.95, 1.05), "Impacts")
+
+
 func level_up() -> void:
 	_play_sfx("level_up", 0.28, 1.0, "Master")
 
@@ -382,6 +386,12 @@ func _generate_all_streams() -> void:
 	_mix_sine_drop(gt_buf, 0.0, 0.10, 320.0, 110.0, 0.6)
 	_mix_sweep(gt_buf, 0.0, 0.11, 1400.0, 320.0, 0.35, false, rng)
 	_streams["grenade_toss"] = _make_wav(gt_buf, false)
+
+	# 18. Reverse dash: heavy low punch + gritty reverse thrust burst
+	var rd_buf := _zero_buf(0.32)
+	_mix_sine_drop(rd_buf, 0.0, 0.22, 220.0, 52.0, 0.8)
+	_mix_sweep(rd_buf, 0.0, 0.28, 3200.0, 380.0, 0.55, true, rng)
+	_streams["reverse_dash"] = _make_wav(rd_buf, false)
 
 
 static func _zero_buf(seconds: float) -> PackedFloat32Array:

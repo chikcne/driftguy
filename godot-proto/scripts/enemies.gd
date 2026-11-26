@@ -1894,13 +1894,42 @@ func _collide_with_car(
 
 	var closing := maxf(0.0, (car.vx - enemy.vx) * nx + (car.vz - enemy.vz) * nz)
 	var mass_total := PLAYER_MASS + spec.mass
-	var enemy_push := (2.5 + closing * 0.65) * (PLAYER_MASS / mass_total) * 1.4
-	enemy.vx += nx * enemy_push
-	enemy.vz += nz * enemy_push
-	var shove := minf(closing * 0.3, 6.5) * (spec.mass / mass_total) * 1.4
-	car.vx -= nx * shove
-	car.vz -= nz * shove
-	car.yaw_rate += (nx * pfz - nz * pfx) * shove * 0.09
+	var dash_hit := car.reverse_dash_momentum
+	if dash_hit:
+		# Reverse dash knocks enemy vehicles out of the way while keeping the player car on line
+		var dash_mass_scale := clampf(1.55 / (0.55 + spec.mass), 0.38, 1.2)
+		var push_mag := minf(42.0, (14.0 + minf(closing, 60.0) * 0.42) * dash_mass_scale)
+		var side_sign := signf(dx * prx + dz * prz)
+		if side_sign == 0.0:
+			side_sign = -1.0 if randf() < 0.5 else 1.0
+		var rear_align := maxf(0.0, -(nx * pfx + nz * pfz))
+		var kx := nx + prx * side_sign * rear_align * 0.65
+		var kz := nz + prz * side_sign * rear_align * 0.65
+		var klen := maxf(0.001, sqrt(kx * kx + kz * kz))
+		kx /= klen
+		kz /= klen
+		var along_k := enemy.vx * kx + enemy.vz * kz
+		if along_k < push_mag:
+			var dv := push_mag - along_k
+			enemy.vx += kx * dv
+			enemy.vz += kz * dv
+		enemy.knock_x = kx * push_mag * 0.45
+		enemy.knock_z = kz * push_mag * 0.45
+		enemy.spin = clampf(enemy.spin + side_sign * BUMP_SPIN * dash_mass_scale, -BUMP_SPIN * 1.4, BUMP_SPIN * 1.4)
+		enemy.reel = maxf(enemy.reel, clampf(0.55 + dash_mass_scale * 0.35, 0.55, 1.0))
+		enemy.flinch = 1.0
+		var shove := minf(closing * 0.08, 2.0) * (spec.mass / mass_total)
+		car.vx -= nx * shove
+		car.vz -= nz * shove
+		car.yaw_rate += (nx * pfz - nz * pfx) * shove * 0.03
+	else:
+		var enemy_push := (2.5 + closing * 0.65) * (PLAYER_MASS / mass_total) * 1.4
+		enemy.vx += nx * enemy_push
+		enemy.vz += nz * enemy_push
+		var shove := minf(closing * 0.3, 6.5) * (spec.mass / mass_total) * 1.4
+		car.vx -= nx * shove
+		car.vz -= nz * shove
+		car.yaw_rate += (nx * pfz - nz * pfx) * shove * 0.09
 
 	if wrecked:
 		return
@@ -1929,6 +1958,8 @@ func _collide_with_car(
 
 	var raw_to_player := (base_impact * enemy_mass_mult + e_bonus) * _face_vuln(player_face) * damage_scale
 	var dmg_to_player := maxf(0.0, raw_to_player - p_armor)
+	if dash_hit:
+		dmg_to_player *= 0.5
 
 	var raw_to_enemy := (base_impact * player_mass_mult + p_bonus) * _face_vuln(enemy_face)
 	var dmg_to_enemy := maxf(0.0, raw_to_enemy - e_armor)

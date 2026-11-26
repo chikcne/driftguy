@@ -45,6 +45,7 @@ var show_horizon := false
 var touch_brake := false
 var touch_handbrake := false
 var touch_nitro_queued := false
+var touch_reverse_dash := false
 
 var _stabilizer: GyroStabilizer
 var _root: Control
@@ -70,6 +71,8 @@ var _smoke_fill: ColorRect
 var _nitro_fill: ColorRect
 var _nitro_tanks_box: HBoxContainer
 var _nitro_pips: Array[ColorRect] = []
+var _dash_btn: Button
+var _dash_cd_fill: ColorRect
 var _nitro_btn: Button
 var _throttle_pad: ThrottlePad
 var _mute_btn: Button
@@ -100,6 +103,7 @@ var _shown_kmh := -1
 var _shown_hp := -1
 var _shown_max_hp := -1
 var _shown_nitro_state := -1
+var _shown_dash_state := -999
 var _rush_tinted := false
 var _threats_layer: Control
 var _threat_markers: Array[ThreatMarker] = []
@@ -204,14 +208,12 @@ class ThrottlePad:
 	signal end_stop_reached
 
 	const FORWARD_TRAVEL_MM := 18.0
-	const REVERSE_TRAVEL_MM := 12.0
 	const DEAD_ZONE_MM := 2.0
 	const MAX_AXIS_ANGLE_RAD := PI * 0.25
 	const MIN_TRAVEL_SCREEN_FRACTION := 0.1
 	const MAX_TRAVEL_SCREEN_FRACTION := 0.34
 	const FALLBACK_SCREEN_HEIGHT_MM := 65.0
 	const MM_PER_INCH := 25.4
-	const BOTTOM_EDGE_MARGIN := 10.0
 	const END_STOP_REARM_LEVEL := 0.9
 	const NO_FINGER := -1
 	const TRACK_WIDTH := 6.0
@@ -228,7 +230,6 @@ class ThrottlePad:
 	var _axis_locked := false
 	var _pull := 0.0
 	var _forward_travel := 0.0
-	var _reverse_travel := 0.0
 	var _dead_zone := 0.0
 	var _end_stop_armed := true
 
@@ -261,47 +262,42 @@ class ThrottlePad:
 		var units_per_mm := _units_per_mm()
 		var shortest := size.y * MIN_TRAVEL_SCREEN_FRACTION
 		var longest := size.y * MAX_TRAVEL_SCREEN_FRACTION
-		var room_below := size.y - BOTTOM_EDGE_MARGIN - at.y
 		_finger = finger
 		_origin = at
 		_axis = Vector2.UP
 		_axis_locked = false
 		_pull = 0.0
 		_forward_travel = clampf(FORWARD_TRAVEL_MM * units_per_mm, shortest, longest)
-		_reverse_travel = clampf(minf(REVERSE_TRAVEL_MM * units_per_mm, room_below), shortest, longest)
 		_dead_zone = minf(DEAD_ZONE_MM * units_per_mm, shortest * 0.5)
 		_set_drive(0.0)
 
 	func _follow(touch_pos: Vector2) -> void:
 		var delta := touch_pos - _origin
-		if not _axis_locked and absf(delta.y) > _dead_zone * 0.25:
+		if not _axis_locked and delta.y < -_dead_zone * 0.25:
 			var candidate := _axis_from_delta(delta)
-			if absf(delta.dot(candidate)) > _dead_zone:
+			if delta.dot(candidate) > _dead_zone:
 				_axis = candidate
 				_axis_locked = true
 		var pull := delta.dot(_axis)
 		if pull > _forward_travel:
 			_origin += _axis * (pull - _forward_travel)
 			pull = _forward_travel
-		elif pull < -_reverse_travel:
-			_origin += _axis * (pull + _reverse_travel)
-			pull = -_reverse_travel
+		elif pull < 0.0:
+			_origin += _axis * pull
+			pull = 0.0
 		_pull = pull
-		var travel := _forward_travel if pull >= 0.0 else _reverse_travel
-		var level := clampf((absf(pull) - _dead_zone) / (travel - _dead_zone), 0.0, 1.0)
-		_set_drive(level * signf(pull))
+		var level := clampf((pull - _dead_zone) / (_forward_travel - _dead_zone), 0.0, 1.0)
+		_set_drive(level)
 
 	static func _axis_from_delta(delta: Vector2) -> Vector2:
-		var up_vec := delta if delta.y <= 0.0 else -delta
-		var angle := clampf(atan2(up_vec.x, -up_vec.y), -MAX_AXIS_ANGLE_RAD, MAX_AXIS_ANGLE_RAD)
+		var angle := clampf(atan2(delta.x, -delta.y), -MAX_AXIS_ANGLE_RAD, MAX_AXIS_ANGLE_RAD)
 		return Vector2(sin(angle), -cos(angle))
 
 	func _set_drive(value: float) -> void:
 		drive = value
-		var level := absf(value)
-		if level < END_STOP_REARM_LEVEL:
+		if value < END_STOP_REARM_LEVEL:
 			_end_stop_armed = true
-		elif level >= 1.0 and _end_stop_armed:
+		elif value >= 1.0 and _end_stop_armed:
 			_end_stop_armed = false
 			end_stop_reached.emit()
 		queue_redraw()
@@ -317,17 +313,14 @@ class ThrottlePad:
 		if _finger == NO_FINGER:
 			return
 		var top := _origin + _axis * _forward_travel
-		var bottom := _origin - _axis * _reverse_travel
 		var knob := _origin + _axis * _pull
 		var ends := Vector2(-_axis.y, _axis.x) * TRACK_END_HALF_WIDTH
-		draw_line(top, bottom, TRACK_COLOR, TRACK_WIDTH, true)
+		draw_line(top, _origin, TRACK_COLOR, TRACK_WIDTH, true)
 		draw_line(top - ends, top + ends, TRACK_COLOR, TRACK_WIDTH, true)
-		draw_line(bottom - ends, bottom + ends, TRACK_COLOR, TRACK_WIDTH, true)
-		draw_line(_origin - ends * 0.5, _origin + ends * 0.5, TRACK_COLOR, TRACK_WIDTH, true)
-		var drive_color := Palette.REPAIR if drive > 0.0 else Palette.CAR_STRIPE
-		if drive != 0.0:
-			draw_line(_origin, knob, drive_color, TRACK_WIDTH, true)
-		draw_circle(knob, KNOB_RADIUS, KNOB_COLOR if drive == 0.0 else drive_color)
+		draw_line(_origin - ends, _origin + ends, TRACK_COLOR, TRACK_WIDTH, true)
+		if drive > 0.0:
+			draw_line(_origin, knob, Palette.REPAIR, TRACK_WIDTH, true)
+		draw_circle(knob, KNOB_RADIUS, KNOB_COLOR if drive <= 0.0 else Palette.REPAIR)
 		draw_arc(knob, KNOB_RADIUS, 0.0, TAU, 32, Palette.INK, 2.0, true)
 
 
@@ -428,6 +421,7 @@ func show_phase(phase: String) -> void:
 		touch_brake = false
 		touch_handbrake = false
 		touch_nitro_queued = false
+		touch_reverse_dash = false
 	if phase == "dying" or phase == "gameover" or phase == "title":
 		_throttle_pad.release()
 		set_threats([], 0.0)
@@ -527,6 +521,26 @@ func set_nitro(tanks: int, max_tanks: int, fill: float, burning: bool) -> void:
 	else:
 		_nitro_btn.text = "NITRO\n0"
 		_nitro_btn.modulate = Color(0.7, 0.7, 0.75, 0.65)
+
+
+func set_reverse_dash(cooldown: float, max_cooldown: float, dashing: bool) -> void:
+	var cooling := not dashing and cooldown > 0.0
+	_dash_cd_fill.visible = cooling
+	if cooling:
+		_dash_cd_fill.anchor_right = 1.0 - clampf(cooldown / maxf(0.01, max_cooldown), 0.0, 1.0)
+	var state := -2 if dashing else (-1 if not cooling else int(ceil(cooldown * 10.0)))
+	if state == _shown_dash_state:
+		return
+	_shown_dash_state = state
+	if dashing:
+		_dash_btn.text = "BACK\nDASH!"
+		_dash_btn.modulate = Color(1.22, 1.12, 0.95, 1.0)
+	elif cooling:
+		_dash_btn.text = "DASH\n%.1fs" % (float(state) * 0.1)
+		_dash_btn.modulate = Color(0.68, 0.66, 0.64, 0.65)
+	else:
+		_dash_btn.text = "BACK\nDASH"
+		_dash_btn.modulate = Color(1.0, 1.0, 1.0, 1.0)
 
 
 func set_rush(amount: float) -> void:
@@ -1167,7 +1181,7 @@ func _build_playing_hud() -> void:
 	left_pad_col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bl_row.add_child(left_pad_col)
 
-	left_pad_col.add_child(_make_caption("SWIPE ↑ GAS\nSWIPE ↓ REVERSE"))
+	left_pad_col.add_child(_make_caption("SWIPE ↑ GAS"))
 
 	var brake_btn := _make_thumb_button("BRAKE", Color(0.168, 0.114, 0.102, 0.72), Palette.PAPER)
 	brake_btn.button_down.connect(func() -> void: touch_brake = true)
@@ -1229,12 +1243,12 @@ func _build_playing_hud() -> void:
 	_nitro_tanks_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	nitro_row.add_child(_nitro_tanks_box)
 
-	# Bottom-right: Loadout badges above Nitro + Drift thumb pads
+	# Bottom-right: Loadout badges above Back Dash + Nitro + Drift thumb pads
 	var br_col := VBoxContainer.new()
 	br_col.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	br_col.offset_right = -44.0
 	br_col.offset_bottom = -24.0
-	br_col.offset_left = -380.0
+	br_col.offset_left = -420.0
 	br_col.offset_top = -340.0
 	br_col.alignment = BoxContainer.ALIGNMENT_END
 	br_col.add_theme_constant_override("separation", 10)
@@ -1258,6 +1272,21 @@ func _build_playing_hud() -> void:
 	right_pads.add_theme_constant_override("separation", 12)
 	right_pads.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	br_col.add_child(right_pads)
+
+	_dash_btn = _make_thumb_button("BACK\nDASH", Color(0.62, 0.36, 0.12, 0.82), Color("#ffecd0"))
+	_dash_btn.button_down.connect(func() -> void: touch_reverse_dash = true)
+	_dash_btn.button_up.connect(func() -> void: touch_reverse_dash = false)
+	_dash_cd_fill = ColorRect.new()
+	_dash_cd_fill.anchor_left = 0.0
+	_dash_cd_fill.anchor_right = 1.0
+	_dash_cd_fill.anchor_top = 1.0
+	_dash_cd_fill.anchor_bottom = 1.0
+	_dash_cd_fill.offset_top = -6.0
+	_dash_cd_fill.color = Palette.SCRAP
+	_dash_cd_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_dash_cd_fill.visible = false
+	_dash_btn.add_child(_dash_cd_fill)
+	right_pads.add_child(_dash_btn)
 
 	_nitro_btn = _make_thumb_button("NITRO\n[1]", Color(0.12, 0.35, 0.52, 0.8), Color("#d6f3ff"))
 	_nitro_btn.button_down.connect(func() -> void: touch_nitro_queued = true)
@@ -1378,15 +1407,15 @@ func _build_title_screen() -> void:
 
 	controls_row.add_child(_make_control_card("IPHONE · GYRO & TOUCH", [
 		["TILT PHONE", "Steer (world rotates around you)"],
-		["SWIPE LEFT SIDE", "Up: gas · down: reverse · hold"],
-		["BRAKE", "Left thumb"],
-		["DRIFT · NITRO", "Right thumb"],
+		["SWIPE LEFT SIDE", "Up: gas · hold"],
+		["BRAKE", "Left thumb (stop)"],
+		["DASH · NITRO · DRIFT", "Right thumb"],
 	]))
 	controls_row.add_child(_make_control_card("KEYBOARD · CONTROLLER", [
 		["W / S · RT / LT", "Throttle / Brake"],
 		["A D · STICK", "Steer"],
 		["SPACE · B/X", "Handbrake"],
-		["E · A / ESC · M", "Nitrous · Pause · Mute"],
+		["X/C · LB/Y · E · A", "Back Dash · Nitrous"],
 	]))
 
 	var btn_wrap := HBoxContainer.new()

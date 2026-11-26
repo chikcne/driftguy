@@ -59,6 +59,9 @@ const NITROUS_FOV_KICK_DEG := 2.0
 const NITROUS_SHAKE := 0.32
 const NITROUS_LOOK_AHEAD := 0.12
 const NITROUS_FLAME_PUFFS_PER_SECOND := 36.0
+const REVERSE_DASH_COOLDOWN := 2.0
+const REVERSE_DASH_POWERED_DISTANCE := 23.0 # + ~4.8m arrest skid = ~28m (~half gameplay screen)
+const REVERSE_DASH_MAX_SECONDS := 0.55
 const LEVEL_UP_PICK_GUARD := 0.55
 const THROTTLE_STOP_HAPTIC_MS := 12
 
@@ -130,12 +133,17 @@ var _nitro_view := 0.0
 var _nitro_pull := 0.0
 var _nitro_kick := 0.0
 var _flame_acc := 0.0
+var _reverse_dash_active := false
+var _reverse_dash_cooldown := 0.0
+var _reverse_dash_distance := 0.0
+var _reverse_dash_time := 0.0
 var _pick_guard := 0.0
 var _last_handbrake := false
 var _last_throttle := 0.0
 
 # Edge-triggered keyboard/gamepad state
 var _prev_nitro_key := false
+var _prev_reverse_dash_input := false
 var _prev_confirm_pad := false
 var _prev_pause_pad := false
 var _prev_menu_dir := 0
@@ -390,6 +398,8 @@ func _toggle_mute() -> void:
 
 func _set_phase(new_phase: String) -> void:
 	_phase = new_phase
+	if new_phase != "playing" and _reverse_dash_active:
+		_end_reverse_dash()
 	_hud.show_phase(new_phase)
 	if new_phase == "gameover":
 		_hud.show_game_over_stats(_time, _kills, _level)
@@ -422,6 +432,11 @@ func _reset_run() -> void:
 	_nitro_pull = 0.0
 	_nitro_kick = 0.0
 	_flame_acc = 0.0
+	_reverse_dash_active = false
+	_reverse_dash_cooldown = 0.0
+	_reverse_dash_distance = 0.0
+	_reverse_dash_time = 0.0
+	_prev_reverse_dash_input = false
 	_dust_acc = 0.0
 	_smoke_output = 0.0
 	_smoke_acc.fill(0.0)
@@ -446,6 +461,7 @@ func _reset_run() -> void:
 	_car_model.sync_attachments(false, false, false, false, false)
 	_hud.set_loadout(_levels)
 	_hud.set_nitro(_nitro_tanks, _stats.nitro_max_tanks, 0.0, false)
+	_hud.set_reverse_dash(0.0, REVERSE_DASH_COOLDOWN, false)
 	_hud.set_frame(_hp, _stats.max_hp, 0.0, _level, 0.0, 0, 0.0, 0.0, Engine.get_frames_per_second())
 
 
@@ -480,6 +496,7 @@ func _simulate(dt: float) -> void:
 	var key_brake := Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)
 	var key_handbrake := Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_SHIFT)
 	var key_nitro := Input.is_key_pressed(KEY_E) or Input.is_key_pressed(KEY_N) or Input.is_key_pressed(KEY_F)
+	var key_dash := Input.is_key_pressed(KEY_X) or Input.is_key_pressed(KEY_C)
 
 	var pad_connected := _controller_connected()
 	var pad_steer := 0.0
@@ -487,6 +504,7 @@ func _simulate(dt: float) -> void:
 	var pad_brake := 0.0
 	var pad_handbrake := false
 	var pad_nitro := false
+	var pad_dash := false
 	if pad_connected:
 		var sx := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
 		if absf(sx) > 0.12:
@@ -495,6 +513,7 @@ func _simulate(dt: float) -> void:
 		pad_brake = maxf(0.0, Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT))
 		pad_handbrake = Input.is_joy_button_pressed(0, JOY_BUTTON_B) or Input.is_joy_button_pressed(0, JOY_BUTTON_X) or Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER)
 		pad_nitro = Input.is_joy_button_pressed(0, JOY_BUTTON_A)
+		pad_dash = Input.is_joy_button_pressed(0, JOY_BUTTON_Y) or Input.is_joy_button_pressed(0, JOY_BUTTON_LEFT_SHOULDER)
 
 	_stabilizer.update(dt, key_left, key_right, key_hold_left, key_hold_right)
 
@@ -507,27 +526,37 @@ func _simulate(dt: float) -> void:
 			steer = key_steer
 		else:
 			steer = _stabilizer.steer_output
-	var touch_drive := _hud.touch_drive()
-	var stop := 1.0 if _hud.touch_brake else 0.0
-	var brake := maxf(maxf(pad_brake, 1.0 if key_brake else 0.0), maxf(0.0, -touch_drive))
+	var touch_drive := maxf(0.0, _hud.touch_drive())
+	var brake := maxf(maxf(pad_brake, 1.0 if key_brake else 0.0), 1.0 if _hud.touch_brake else 0.0)
 	var handbrake := _hud.touch_handbrake or key_handbrake or pad_handbrake
 	var throttle := pad_throttle
-	if stop <= 0.0:
-		throttle = maxf(throttle, maxf(0.0, touch_drive))
-		if brake <= 0.0 and key_throttle:
+	if brake <= 0.0:
+		throttle = maxf(throttle, touch_drive)
+		if key_throttle:
 			throttle = 1.0
+
+	var dash_held := _hud.touch_reverse_dash or key_dash or pad_dash
+	var reverse_dashing := _update_reverse_dash(dt, dash_held)
 
 	var nitro_pressed_now := key_nitro or pad_nitro
 	var nitro_trigger := (nitro_pressed_now and not _prev_nitro_key) or _hud.consume_touch_nitro()
 	_prev_nitro_key = nitro_pressed_now
-	var boost := _update_nitrous(dt, nitro_trigger)
+	var boost := 0.0 if reverse_dashing else _update_nitrous(dt, nitro_trigger)
 
 	_last_handbrake = handbrake
-	_last_throttle = throttle
+	_last_throttle = 0.0 if reverse_dashing else throttle
 
-	_car.step(dt, throttle, brake, steer, handbrake, boost, stop)
+	var prev_x := _car.x
+	var prev_z := _car.z
+	_car.step(dt, throttle, brake, steer, handbrake, boost, reverse_dashing)
 	Perf.mark("input+car")
 	_collide_car_with_world()
+	if _reverse_dash_active:
+		var moved_x := _car.x - prev_x
+		var moved_z := _car.z - prev_z
+		_reverse_dash_distance += sqrt(moved_x * moved_x + moved_z * moved_z)
+		if _reverse_dash_distance >= REVERSE_DASH_POWERED_DISTANCE:
+			_end_reverse_dash()
 	_world.update_around(_car.x, _car.z)
 	Perf.mark("world.collide+chunks")
 
@@ -617,6 +646,7 @@ func _simulate(dt: float) -> void:
 	else:
 		nitro_fill = _nitro_harm / NITROUS_HARM_PER_TANK
 	_hud.set_nitro(_nitro_tanks, _stats.nitro_max_tanks, nitro_fill, _nitro_burn > 0.0)
+	_hud.set_reverse_dash(_reverse_dash_cooldown, REVERSE_DASH_COOLDOWN, _reverse_dash_active)
 	Perf.mark("hud.threats+nitro")
 
 	if _hp <= 0.0:
@@ -628,6 +658,56 @@ func _simulate(dt: float) -> void:
 		_hud.open_level_up(Upgrades.roll_choices(_levels, 3, _level), _levels)
 		_pick_guard = LEVEL_UP_PICK_GUARD
 		_set_phase("levelup")
+
+
+func _update_reverse_dash(dt: float, held: bool) -> bool:
+	var pressed_edge := held and not _prev_reverse_dash_input
+	_prev_reverse_dash_input = held
+
+	if _reverse_dash_active:
+		if not held or _reverse_dash_distance >= REVERSE_DASH_POWERED_DISTANCE or _reverse_dash_time >= REVERSE_DASH_MAX_SECONDS:
+			_end_reverse_dash()
+			return false
+		_reverse_dash_time += dt
+		return true
+
+	_reverse_dash_cooldown = maxf(0.0, _reverse_dash_cooldown - dt)
+	if pressed_edge and _reverse_dash_cooldown <= 0.0:
+		_begin_reverse_dash()
+		return true
+	return false
+
+
+func _begin_reverse_dash() -> void:
+	_reverse_dash_active = true
+	_reverse_dash_distance = 0.0
+	_reverse_dash_time = 0.0
+	_nitro_burn = 0.0
+	_nitro_level = 0.0
+	_car.start_reverse_dash()
+	var fx := sin(_car.heading)
+	var fz := cos(_car.heading)
+	_effects.spawn_ring(_car.x, _car.z, 5.5)
+	_smoke.shockwave(_car.x, _car.z, 7.0, 5.5)
+	for w in 4:
+		var spot := _wheel_pos(w)
+		_smoke.emit(
+			SmokeSystem.PUFF_DUST,
+			spot.x, DesertTerrain.ground_height(spot.x, spot.y) + 0.35, spot.y,
+			fx * 8.0 + SimMath.rand_signed(2.2),
+			randf_range(1.2, 2.8),
+			fz * 8.0 + SimMath.rand_signed(2.2),
+			randf_range(0.6, 0.95), 1.35, randf_range(0.8, 1.3), 0.75, 0.4,
+		)
+	_shake = maxf(_shake, 0.35)
+	_audio.reverse_dash()
+	_haptic(90)
+
+
+func _end_reverse_dash() -> void:
+	_reverse_dash_active = false
+	_reverse_dash_cooldown = REVERSE_DASH_COOLDOWN
+	_car.reverse_dashing = false
 
 
 func _update_nitrous(dt: float, trigger: bool) -> float:
@@ -709,6 +789,10 @@ func _collide_car_with_world() -> void:
 	_car.vz -= (1.0 + WALL_BOUNCE) * into * _contact.nz
 	_car.yaw_rate *= 0.6
 	var impact := -into
+	if _reverse_dash_active and impact > 8.0:
+		var back_into := (-sin(_car.heading)) * _contact.nx + (-cos(_car.heading)) * _contact.nz
+		if back_into < -0.5:
+			_end_reverse_dash()
 	if impact > 5.0:
 		_shake = maxf(_shake, SimMath.saturate(impact / 25.0))
 		_audio.thud(impact / 25.0)
@@ -1045,6 +1129,10 @@ func _die() -> void:
 	_shake = 1.0
 	_nitro_burn = 0.0
 	_nitro_level = 0.0
+	_reverse_dash_active = false
+	_reverse_dash_cooldown = 0.0
+	_car.reverse_dashing = false
+	_car.reverse_dash_momentum = false
 	_smoke_output = 0.0
 	_audio.defeat()
 	_haptic(350)

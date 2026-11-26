@@ -21,7 +21,12 @@ const LOCKED_REAR_FRICTION := 0.7
 const SELF_ALIGN := 1.0
 const MAX_STEER_ANGLE := 1.1
 const YAW_DAMPING := 0.9
-const REVERSE_SPEED_FRACTION := 0.3
+const REVERSE_DASH_SPEED := 52.0
+const REVERSE_DASH_ACCEL := 320.0
+const REVERSE_DASH_STOP_DECEL := 280.0
+const REVERSE_DASH_YAW_DAMP := 12.0
+const REVERSE_DASH_LAT_DAMP := 14.0
+const REVERSE_DASH_MOMENTUM_MIN_SPEED := 4.0
 const BRAKE_REAR_UNLOAD := 0.3
 const LIFT_OFF_REAR_UNLOAD := 0.1
 const ROLLING_DRAG := 0.5
@@ -62,6 +67,8 @@ var front_slip_speed := 0.0
 var burnout := 0.0
 var long_accel := 0.0
 var lat_accel := 0.0
+var reverse_dashing := false
+var reverse_dash_momentum := false
 
 var _leftover := 0.0
 
@@ -90,21 +97,38 @@ func reset() -> void:
 	burnout = 0.0
 	long_accel = 0.0
 	lat_accel = 0.0
+	reverse_dashing = false
+	reverse_dash_momentum = false
 	_leftover = 0.0
+
+
+func start_reverse_dash() -> void:
+	# Kill all existing forward and lateral momentum so every dash is consistent.
+	var fx := sin(heading)
+	var fz := cos(heading)
+	vx = -fx * REVERSE_DASH_SPEED
+	vz = -fz * REVERSE_DASH_SPEED
+	yaw_rate = 0.0
+	speed = REVERSE_DASH_SPEED
+	forward_speed = -REVERSE_DASH_SPEED
+	lateral_speed = 0.0
+	burnout = 0.0
+	reverse_dashing = true
+	reverse_dash_momentum = true
 
 
 func get_drift_angle() -> float:
 	return atan2(lateral_speed, absf(forward_speed) + 0.5)
 
 
-func step(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_stop: float) -> void:
+func step(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_reverse_dash: bool = false) -> void:
 	_leftover += minf(dt, 0.05)
 	while _leftover >= SUBSTEP:
-		_substep(SUBSTEP, in_throttle, in_brake, in_steer, in_handbrake, in_boost, in_stop)
+		_substep(SUBSTEP, in_throttle, in_brake, in_steer, in_handbrake, in_boost, in_reverse_dash)
 		_leftover -= SUBSTEP
 
 
-func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_stop: float) -> void:
+func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, in_handbrake: bool, in_boost: float, in_reverse_dash: bool) -> void:
 	var fx := sin(heading)
 	var fz := cos(heading)
 	var rx := fz
@@ -113,7 +137,31 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 	var v_r := vx * rx + vz * rz
 	var w := yaw_rate
 	var abs_f := absf(v_f)
-	var direction := 1.0 if v_f >= 0.0 else -1.0
+
+	if in_reverse_dash:
+		reverse_dashing = true
+		reverse_dash_momentum = true
+		steer_angle = move_toward(steer_angle, 0.0, steer_speed * dt)
+		var next_vf := move_toward(v_f, -REVERSE_DASH_SPEED, REVERSE_DASH_ACCEL * dt)
+		var next_vr := v_r * exp(-REVERSE_DASH_LAT_DAMP * dt)
+		vx = fx * next_vf + rx * next_vr
+		vz = fz * next_vf + rz * next_vr
+		yaw_rate = w * exp(-REVERSE_DASH_YAW_DAMP * dt)
+		heading += yaw_rate * dt
+		x += vx * dt
+		z += vz * dt
+
+		speed = sqrt(vx * vx + vz * vz)
+		forward_speed = next_vf
+		lateral_speed = next_vr
+		rear_slip_speed = maxf(6.0, absf(next_vf) * 0.22)
+		front_slip_speed = maxf(4.0, absf(next_vf) * 0.14)
+		burnout = 0.0
+		long_accel = lerpf(long_accel, -20.0, 0.06)
+		lat_accel = lerpf(lat_accel, 0.0, 0.06)
+		return
+
+	reverse_dashing = false
 
 	var front_lat := v_r + AXLE_FRONT * w
 	var rear_lat := v_r - AXLE_REAR * w
@@ -133,25 +181,16 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 
 	var boost := _saturate(in_boost)
 	var throttle := maxf(in_throttle, boost)
+	var brake := _saturate(in_brake)
 	var speed_limit := top_speed * (1.0 + NITROUS_TOP_SPEED * boost)
 	var ratio := v_f / speed_limit
 	var headroom := maxf(0.0, 1.0 - ratio * ratio) if v_f > 0.0 else 1.0
-	var reversing := in_brake > 0.0 and in_stop <= 0.0 and throttle <= 0.0 and v_f < 1.5
-	var engine := 0.0
-	var brake := 0.0
-	if reversing:
-		var reverse_limit := top_speed * REVERSE_SPEED_FRACTION
-		engine = -in_brake * engine_accel * 0.6 * _saturate(1.0 + v_f / reverse_limit)
-	else:
-		engine = throttle * engine_accel * headroom
-		brake = maxf(in_brake, in_stop)
-	if in_handbrake:
-		engine = 0.0
+	var engine := 0.0 if (in_handbrake or brake > 0.0) else throttle * engine_accel * headroom
 
 	var traction_use := minf(0.97, absf(engine) / TRACTION_LIMIT)
 	var rear_grip_factor := sqrt(1.0 - traction_use * traction_use)
 	rear_grip_factor *= 1.0 - BRAKE_REAR_UNLOAD * brake * _saturate(abs_f / 6.0)
-	if throttle <= 0.05 and not reversing:
+	if throttle <= 0.05:
 		rear_grip_factor *= 1.0 - LIFT_OFF_REAR_UNLOAD
 
 	var rear_lat_force := 0.0
@@ -165,8 +204,8 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 		var rear_slip_angle := atan2(rear_lat, abs_f + LOW_SPEED_SOFTENING)
 		rear_lat_force = -grip_rear * WEIGHT_REAR * rear_grip_factor * _tyre_curve(rear_slip_angle)
 
-	var brake_force := -direction * brake * BRAKE_DECEL * _saturate(abs_f)
-	var coasting := ENGINE_BRAKING if (throttle <= 0.05 and not reversing) else 0.0
+	var brake_force := -brake * BRAKE_DECEL * _saturate(v_f) if v_f > 0.0 else 0.0
+	var coasting := ENGINE_BRAKING if throttle <= 0.05 else 0.0
 	var drag_force := -((ROLLING_DRAG + coasting) * tanh(v_f) + LINEAR_DRAG * v_f + OVERSPEED_DRAG * maxf(0.0, v_f - speed_limit))
 	var force_long := engine + boost * NITROUS_THRUST * headroom + brake_force + drag_force + rear_long_force - front_force * sd
 	var force_lat := front_force * cd + rear_lat_force
@@ -178,19 +217,41 @@ func _substep(dt: float, in_throttle: float, in_brake: float, in_steer: float, i
 	)
 
 	var scrub := 0.0 if in_handbrake else (SLIDE_SCRUB * maxf(0.0, absf(rear_lat) - 2.0)) / (sqrt(v_f * v_f + v_r * v_r) + 0.5)
-	vx += (fx * force_long + rx * force_lat - vx * scrub) * dt
-	vz += (fz * force_long + rz * force_lat - vz * scrub) * dt
-	yaw_rate += yaw_accel * dt
-	heading += yaw_rate * dt
-	x += vx * dt
-	z += vz * dt
+	if v_f < 0.0:
+		# Rapidly arrest any residual reverse-dash speed without ever reversing under normal controls.
+		var arrest_rate := REVERSE_DASH_STOP_DECEL + throttle * engine_accel * 2.0 + brake * BRAKE_DECEL
+		var next_vf := minf(0.0, v_f + arrest_rate * dt)
+		var next_vr := v_r * exp(-REVERSE_DASH_LAT_DAMP * dt)
+		vx = fx * next_vf + rx * next_vr
+		vz = fz * next_vf + rz * next_vr
+		yaw_rate = w * exp(-REVERSE_DASH_YAW_DAMP * dt)
+		heading += yaw_rate * dt
+		x += vx * dt
+		z += vz * dt
+		v_f = next_vf
+		v_r = next_vr
+	else:
+		vx += (fx * force_long + rx * force_lat - vx * scrub) * dt
+		vz += (fz * force_long + rz * force_lat - vz * scrub) * dt
+		yaw_rate += yaw_accel * dt
+		heading += yaw_rate * dt
+		x += vx * dt
+		z += vz * dt
+		v_f = vx * fx + vz * fz
+		if v_f < 0.0 and brake > 0.0:
+			# Normal braking never pushes the car into reverse.
+			vx -= fx * v_f
+			vz -= fz * v_f
+			v_f = 0.0
 
 	speed = sqrt(vx * vx + vz * vz)
 	forward_speed = v_f
 	lateral_speed = v_r
-	rear_slip_speed = sqrt(v_f * v_f + rear_lat * rear_lat) if in_handbrake else absf(rear_lat)
-	front_slip_speed = absf(wheel_lat)
-	burnout = 0.0 if in_handbrake else traction_use * throttle * _saturate(1.0 - abs_f / (top_speed * 0.6))
+	reverse_dash_momentum = v_f < -REVERSE_DASH_MOMENTUM_MIN_SPEED
+	var arrest_slip := absf(v_f) * 0.25 if reverse_dash_momentum else 0.0
+	rear_slip_speed = maxf(arrest_slip, sqrt(v_f * v_f + rear_lat * rear_lat) if in_handbrake else absf(rear_lat))
+	front_slip_speed = maxf(arrest_slip * 0.6, absf(wheel_lat))
+	burnout = 0.0 if (in_handbrake or v_f < -0.5) else traction_use * throttle * _saturate(1.0 - abs_f / (top_speed * 0.6))
 	long_accel = lerpf(long_accel, force_long, 0.02)
 	lat_accel = lerpf(lat_accel, force_lat, 0.02)
 
