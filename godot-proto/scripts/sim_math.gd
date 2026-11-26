@@ -44,12 +44,9 @@ static func sim_pos(x: float, y: float, z: float) -> Vector3:
 
 
 static func sim_basis_ypr(yaw: float, pitch: float, roll: float, sx: float = 1.0, sy: float = 1.0, sz: float = 1.0) -> Basis:
-	# Exact conjugation S * R_sim * S where S = diag(1, 1, -1)
-	var b := Basis.from_euler(Vector3(-pitch, -yaw, roll), EULER_ORDER_YXZ)
-	b.x *= sx
-	b.y *= sy
-	b.z *= sz
-	return b
+	# Exact conjugation S * R_sim * S where S = diag(1, 1, -1).
+	# scaled_local() scales the basis columns in one native call.
+	return Basis.from_euler(Vector3(-pitch, -yaw, roll), EULER_ORDER_YXZ).scaled_local(Vector3(sx, sy, sz))
 
 
 static func sim_transform(
@@ -63,7 +60,11 @@ static func sim_transform(
 	sy: float = 1.0,
 	sz: float = 1.0,
 ) -> Transform3D:
-	return Transform3D(sim_basis_ypr(yaw, pitch, roll, sx, sy, sz), Vector3(x, y, -z))
+	# sim_basis_ypr() written out in place: this runs once per drawn instance.
+	return Transform3D(
+		Basis.from_euler(Vector3(-pitch, -yaw, roll), EULER_ORDER_YXZ).scaled_local(Vector3(sx, sy, sz)),
+		Vector3(x, y, -z),
+	)
 
 
 static func sim_quat_transform(
@@ -172,7 +173,10 @@ class InstanceBatch:
 	) -> void:
 		if count >= capacity:
 			return
-		multimesh.set_instance_transform(count, SimMath.sim_transform(x, y, z, yaw, pitch, roll, sx, sy, sz))
+		multimesh.set_instance_transform(count, Transform3D(
+			Basis.from_euler(Vector3(-pitch, -yaw, roll), EULER_ORDER_YXZ).scaled_local(Vector3(sx, sy, sz)),
+			Vector3(x, y, -z),
+		))
 		count += 1
 
 	func push_under(
@@ -187,8 +191,10 @@ class InstanceBatch:
 		sy: float,
 		sz: float,
 	) -> Transform3D:
-		var local := SimMath.sim_transform(x, y, z, yaw, pitch, roll, sx, sy, sz)
-		var world := parent_xform * local
+		var world := parent_xform * Transform3D(
+			Basis.from_euler(Vector3(-pitch, -yaw, roll), EULER_ORDER_YXZ).scaled_local(Vector3(sx, sy, sz)),
+			Vector3(x, y, -z),
+		)
 		if count < capacity:
 			multimesh.set_instance_transform(count, world)
 			count += 1
