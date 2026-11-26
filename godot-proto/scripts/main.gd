@@ -462,6 +462,7 @@ func _idle(dt: float) -> void:
 
 
 func _simulate(dt: float) -> void:
+	Perf.begin()
 	_time += dt
 	_track_time += dt
 	_tracks.set_time(_track_time)
@@ -523,12 +524,16 @@ func _simulate(dt: float) -> void:
 	_last_throttle = throttle
 
 	_car.step(dt, throttle, brake, steer, handbrake, boost, stop)
+	Perf.mark("input+car")
 	_collide_car_with_world()
 	_world.update_around(_car.x, _car.z)
+	Perf.mark("world.collide+chunks")
 
 	_emit_tyre_smoke(dt)
 	_emit_exhaust_flames(dt)
+	Perf.mark("emit_smoke")
 	_spawner.update(dt, _time, _car, _enemies)
+	Perf.mark("spawner")
 	_enemies.update_enemies(
 		dt,
 		_car,
@@ -546,8 +551,11 @@ func _simulate(dt: float) -> void:
 		_track_time,
 		_cb_akira,
 	)
+	Perf.mark("enemies.update")
 	_world.step_world(dt, _car.x, _car.z)
+	Perf.mark("world.step")
 	_combat.update_gun(dt, _car, _stats, _enemies, _cb_shot)
+	Perf.mark("combat.gun")
 	_combat.update_explosives(
 		dt,
 		_car,
@@ -560,21 +568,29 @@ func _simulate(dt: float) -> void:
 		_cb_grenade_toss,
 		_cb_grenade_kick,
 	)
+	Perf.mark("combat.explosives")
 	_enemies.sweep_dead(_cb_wreck, _cb_kill)
 	_update_blasts(dt)
 	_gather_nitrous()
 	_update_crates(dt)
 	_combat.update_pickups(dt, _car, _stats.magnet_radius, _cb_collect)
+	Perf.mark("sweep+blasts+pickups")
 
 	_effects.update_effects(dt)
 	_gibs.update_gibs(dt, _smoke, _car, _cb_pipe_hit)
+	Perf.mark("effects+gibs")
 	_update_smoke(dt)
+	Perf.mark("smoke.update")
 	_update_car_visuals(dt)
 	_update_camera(dt)
+	Perf.mark("car_visuals+camera")
 	_enemies.render_all(_clock)
+	Perf.mark("enemies.render")
 	_combat.render_all(_clock)
+	Perf.mark("combat.render")
 	_tracks.flush()
 	_enemy_tracks.flush()
+	Perf.mark("tracks.flush")
 
 	var needed := Upgrades.scrap_needed(_level)
 	_hud.set_frame(
@@ -589,6 +605,7 @@ func _simulate(dt: float) -> void:
 		Engine.get_frames_per_second(),
 	)
 	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _combat.get_pickups(), _car, _camera)
+	Perf.mark("hud.frame+indicators")
 	_hud.set_threats(_spawner.threats, _stabilizer.display_roll)
 	var nitro_fill := 0.0
 	if _nitro_burn > 0.0:
@@ -598,6 +615,7 @@ func _simulate(dt: float) -> void:
 	else:
 		nitro_fill = _nitro_harm / NITROUS_HARM_PER_TANK
 	_hud.set_nitro(_nitro_tanks, _stats.nitro_max_tanks, nitro_fill, _nitro_burn > 0.0)
+	Perf.mark("hud.threats+nitro")
 
 	if _hp <= 0.0:
 		_die()

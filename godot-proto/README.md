@@ -32,6 +32,16 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 - `E` / `N` / `F` (or `A`) — Nitrous
 - `Esc` / `P` (or `Start`) — Pause, `M` — Mute, `R` — Zero Tilt
 
+## Benchmark
+
+`tools/bench.gd` plays a deterministic, scripted stretch of late-run gameplay and reports the cost of a frame, broken down by subsystem:
+
+```
+godot --path . --headless --fixed-fps 60 -s res://tools/bench.gd -- [frames] [seed] [start_seconds]
+```
+
+It also prints a digest of the final game state. With the same arguments that digest only changes when gameplay does, so a change meant purely as an optimisation should leave it untouched. The header of `tools/bench.gd` covers windowed runs and screenshot capture.
+
 ## Running & Exporting to iOS
 
 1. **Preview on macOS:** Open `godot-proto/project.godot` in Godot 4.7+ and press **Play** (`Cmd+B`).
