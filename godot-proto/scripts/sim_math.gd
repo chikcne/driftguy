@@ -15,6 +15,11 @@ static func damp(from_val: float, to_val: float, rate: float, dt: float) -> floa
 	return lerpf(from_val, to_val, 1.0 - exp(-rate * dt))
 
 
+static func damp_angle(from_angle: float, to_angle: float, rate: float, dt: float) -> float:
+	var diff := wrap_angle(to_angle - from_angle)
+	return wrap_angle(from_angle + diff * (1.0 - exp(-rate * dt)))
+
+
 static func smoothstep_f(edge0: float, edge1: float, v: float) -> float:
 	var t := saturate((v - edge0) / (edge1 - edge0))
 	return t * t * (3.0 - 2.0 * t)

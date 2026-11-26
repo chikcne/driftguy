@@ -31,9 +31,11 @@ var deadzone_deg := 2.5
 var steer_curve := 1.25
 var gravity_correction := 0.035 # Complementary filter anchor weight per 60Hz tick
 var counter_rotate_scale := DEFAULT_COUNTER_ROTATE_SCALE # 1.0 = full horizon lock, 0.5 = half, 0.0 = off
+var world_rotate := true # When true, camera orbits with car heading so player always drives toward top of screen
 var invert_gyro := false
 var gyro_user_set := false
 var counter_rotate_user_set := false
+var world_rotate_user_set := false
 
 var has_hardware_imu := false
 var raw_gyro := Vector3.ZERO
@@ -56,6 +58,8 @@ func apply_defaults(controller_connected: bool) -> void:
 		gyro_enabled = tilt_driven
 	if not counter_rotate_user_set:
 		counter_rotate_scale = DEFAULT_COUNTER_ROTATE_SCALE if tilt_driven else 0.0
+	if not world_rotate_user_set:
+		world_rotate = gyro_enabled
 
 
 static func is_large_screen() -> bool:

@@ -113,6 +113,7 @@ var _horizon_angle_label: Label
 var _tuning_panel: PanelContainer
 var _telemetry_label: Label
 var _gyro_btn: Button
+var _world_rotate_btn: Button
 var _lock_btn: Button
 var _tilt_btn: Button
 var _fusion_btn: Button
@@ -391,6 +392,8 @@ func sync_gyro_settings() -> void:
 	_lock_btn.text = "Screen Lock: " + LOCK_LABELS[_lock_idx]
 	_gyro_btn.text = "Gyro Steer: " + ("ON" if _stabilizer.gyro_enabled else "OFF")
 	_gyro_btn.add_theme_color_override("font_color", Palette.SCRAP if _stabilizer.gyro_enabled else Palette.PAPER)
+	_world_rotate_btn.text = "Rotate: " + ("WORLD" if _stabilizer.world_rotate else "CAR")
+	_world_rotate_btn.add_theme_color_override("font_color", Palette.SCRAP if _stabilizer.world_rotate else Palette.PAPER)
 
 
 func _counter_rotate_upgrade_picker() -> void:
@@ -785,7 +788,7 @@ func _place_arrow(pos: Vector2, angle: float, sc: float, alpha: float, pack: boo
 	arrow.visible = true
 
 
-func set_threats(threats: Array, display_roll: float) -> void:
+func set_threats(threats: Array, display_roll: float, cam_yaw: float = 0.0) -> void:
 	var vp_size := _root.get_viewport_rect().size
 	if vp_size.x < 10.0 or vp_size.y < 10.0:
 		return
@@ -802,8 +805,9 @@ func set_threats(threats: Array, display_roll: float) -> void:
 			_threat_markers.append(_add_threat_marker())
 		var m := _threat_markers[i]
 		var incoming := threat.countdown > 0.0
-		var raw_x := sin(threat.bearing)
-		var raw_y := -cos(threat.bearing) * GROUND_FORESHORTENING
+		var rel_bearing := threat.bearing - cam_yaw
+		var raw_x := sin(rel_bearing)
+		var raw_y := -cos(rel_bearing) * GROUND_FORESHORTENING
 		# Rotate screen direction to stay aligned with counter-rotated horizon camera
 		var rx := raw_x * cr - raw_y * sr
 		var ry := raw_x * sr + raw_y * cr
@@ -1117,7 +1121,7 @@ func _build_playing_hud() -> void:
 	top_right.offset_left = -290.0
 	top_right.offset_right = -44.0
 	top_right.offset_top = 18.0
-	top_right.offset_bottom = 390.0
+	top_right.offset_bottom = 430.0
 	top_right.add_theme_constant_override("separation", 6)
 	top_right.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hud_layer.add_child(top_right)
@@ -1291,6 +1295,10 @@ func _build_gyro_drawer(holder: VBoxContainer, toggle_btn: Button) -> void:
 	_gyro_btn.pressed.connect(_toggle_gyro)
 	list.add_child(_gyro_btn)
 
+	_world_rotate_btn = _make_pill_button("Rotate: WORLD", Color("#3c2823"), Palette.SCRAP)
+	_world_rotate_btn.pressed.connect(_toggle_world_rotate)
+	list.add_child(_world_rotate_btn)
+
 	_lock_btn = _make_pill_button("Screen Lock: " + LOCK_LABELS[_lock_idx], Color("#3c2823"), Palette.SCRAP)
 	_lock_btn.pressed.connect(_cycle_lock)
 	list.add_child(_lock_btn)
@@ -1369,7 +1377,7 @@ func _build_title_screen() -> void:
 	center.add_child(controls_row)
 
 	controls_row.add_child(_make_control_card("IPHONE · GYRO & TOUCH", [
-		["TILT PHONE", "Steer (horizon stays level)"],
+		["TILT PHONE", "Steer (world rotates around you)"],
 		["SWIPE LEFT SIDE", "Up: gas · down: reverse · hold"],
 		["BRAKE", "Left thumb"],
 		["DRIFT · NITRO", "Right thumb"],
@@ -1600,6 +1608,14 @@ func _add_threat_marker() -> ThreatMarker:
 func _toggle_gyro() -> void:
 	_stabilizer.gyro_enabled = not _stabilizer.gyro_enabled
 	_stabilizer.gyro_user_set = true
+	if not _stabilizer.world_rotate_user_set:
+		_stabilizer.world_rotate = _stabilizer.gyro_enabled
+	sync_gyro_settings()
+
+
+func _toggle_world_rotate() -> void:
+	_stabilizer.world_rotate = not _stabilizer.world_rotate
+	_stabilizer.world_rotate_user_set = true
 	sync_gyro_settings()
 
 

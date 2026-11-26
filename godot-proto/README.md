@@ -17,13 +17,13 @@ Full Godot 4.7 (Metal / `Mobile` renderer) port of **Driftguy**, complete with g
 ## Controls
 
 ### iPhone (Gyro + Touch)
-- **Tilt phone** — Steer (with horizon-locked counter-rotating camera; the upgrade picker stays level with it)
+- **Tilt phone** — Steer (world rotates around the player so you always drive toward the top of the screen, with horizon-locked counter-rotation; the upgrade picker stays level with it)
 - **Swipe on the left half** — Up to accelerate, down to brake and then reverse; each touch locks its own up/down axis from your swipe direction (capped to ±45° from screen vertical, ignoring gyroscope rotation). The swipe length along that axis sets how hard (full throttle at about 18 mm up, full reverse at about 12 mm down, 2 mm dead zone), holding keeps the level and lifting the thumb coasts
 - **BRAKE** — Left thumb pad (brakes to a stop, never reverses)
 - **NITRO** — Right thumb pad (ignites banked nitrous tank)
 - **DRIFT** — Right thumb handbrake pad
-- **GYRO** (top-right) — Live tuning drawer (Screen Lock `100% / 75% / 50% / 0%`, Max Tilt, IMU Fusion, Tilt Zoom Comp, Horizon Bar, Invert Roll, Zero Tilt)
-- **Defaults** — On phones gyro steering is on and Screen Lock starts at 75%; on iPad-sized screens, or whenever a controller is connected, both start off until you change them in the drawer
+- **GYRO** (top-right) — Live tuning drawer (Gyro Steer, Rotate `WORLD / CAR`, Screen Lock `100% / 75% / 50% / 0%`, Max Tilt, IMU Fusion, Tilt Zoom Comp, Horizon Bar, Invert Roll, Zero Tilt)
+- **Defaults** — On phones gyro steering is on, `Rotate: WORLD` is enabled, and Screen Lock starts at 75%; on iPad-sized screens, or whenever a controller is connected, all three start off until you change them in the drawer
 
 ### macOS Desktop Preview / Controller
 - `W` / `S` or `↑` / `↓` (or `RT` / `LT`) — Throttle / Brake & Reverse

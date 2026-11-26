@@ -11,6 +11,7 @@ const CAMERA_OFFSET := Vector3(0.0, 0.8, 0.6) # Normalized in _ready
 const CAMERA_DISTANCE_SLOW := 70.0
 const CAMERA_DISTANCE_FAST := 100.0
 const CAMERA_LOOK_AHEAD_SECONDS := 0.45
+const CAMERA_YAW_FOLLOW_RATE := 10.0
 const CAMERA_FOV_DEG := 31.5
 const TILT_ZOOM_EXTRA := 11.0
 const CAR_RADIUS := 1.45
@@ -116,6 +117,7 @@ var _shake := 0.0
 var _cam_dir := CAMERA_OFFSET.normalized()
 var _cam_target := Vector3.ZERO # Godot space (sim_x, y, -sim_z)
 var _cam_distance := CAMERA_DISTANCE_SLOW
+var _cam_yaw := 0.0
 var _dust_acc := 0.0
 var _death_timer := 0.0
 var _smoke_output := 0.0
@@ -606,7 +608,7 @@ func _simulate(dt: float) -> void:
 	)
 	_hud.set_enemy_indicators(_enemies.active, _spawner.threats, _combat.get_pickups(), _car, _camera)
 	Perf.mark("hud.frame+indicators")
-	_hud.set_threats(_spawner.threats, _stabilizer.display_roll)
+	_hud.set_threats(_spawner.threats, _stabilizer.display_roll, _cam_yaw)
 	var nitro_fill := 0.0
 	if _nitro_burn > 0.0:
 		nitro_fill = _nitro_burn / NITROUS_SECONDS
@@ -1083,6 +1085,7 @@ func _snap_camera() -> void:
 	var h := DesertTerrain.ground_height(_car.x, _car.z)
 	_cam_target = Vector3(_car.x, h, -_car.z)
 	_cam_distance = CAMERA_DISTANCE_SLOW
+	_cam_yaw = SimMath.wrap_angle(_car.heading) if _stabilizer.world_rotate else 0.0
 	_nitro_view = 0.0
 	_nitro_pull = 0.0
 	_nitro_kick = 0.0
@@ -1099,15 +1102,18 @@ func _update_camera(dt: float) -> void:
 	var aim_x := _car.x + _car.vx * look_ahead
 	var aim_z := _car.z + _car.vz * look_ahead
 	var aim_y := DesertTerrain.ground_height(_car.x, _car.z)
+	var target_yaw := _car.heading if _stabilizer.world_rotate else 0.0
 
 	if dt > 0.0:
 		_cam_target.x = SimMath.damp(_cam_target.x, aim_x, 5.0, dt)
 		_cam_target.z = SimMath.damp(_cam_target.z, -aim_z, 5.0, dt)
 		_cam_target.y = SimMath.damp(_cam_target.y, aim_y, 3.0, dt)
 		_cam_distance = SimMath.damp(_cam_distance, lerpf(CAMERA_DISTANCE_SLOW, CAMERA_DISTANCE_FAST, speed_fraction), 1.5, dt)
+		_cam_yaw = SimMath.damp_angle(_cam_yaw, target_yaw, CAMERA_YAW_FOLLOW_RATE, dt)
 	else:
 		_cam_target = Vector3(aim_x, aim_y, -aim_z)
 		_cam_distance = CAMERA_DISTANCE_SLOW
+		_cam_yaw = SimMath.wrap_angle(target_yaw)
 
 	_shake = maxf(NITROUS_SHAKE * _nitro_level, _shake - dt * 2.2)
 	var jolt := _shake * _shake * 1.6
@@ -1119,9 +1125,10 @@ func _update_camera(dt: float) -> void:
 
 	var tilt_zoom := TILT_ZOOM_EXTRA * absf(sin(_stabilizer.display_roll)) if _hud.zoom_compensation else 0.0
 	var distance := _cam_distance + NITROUS_PULLBACK * _nitro_pull + tilt_zoom
+	var cam_dir := _cam_dir.rotated(Vector3.UP, -_cam_yaw)
 
 	_camera.fov = CAMERA_FOV_DEG + NITROUS_FOV_DEG * _nitro_view + NITROUS_FOV_KICK_DEG * _nitro_kick * _nitro_kick
-	_camera.position = _cam_target + _cam_dir * distance + shake_vec
+	_camera.position = _cam_target + cam_dir * distance + shake_vec
 	_aim_camera()
 
 
